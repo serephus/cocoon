@@ -12,8 +12,8 @@ diesel = { version = "2.3", features = ["sqlite", "r2d2"] }
 diesel_migrations = { version = "2.3", features = ["sqlite"] }
 # Link a bundled SQLite so no system sqlite/pkg-config is required.
 libsqlite3-sys = { version = "0.38", features = ["bundled"] }
-hmac = "0.12"
-sha2 = "0.10"
+hmac = "0.13"
+sha2 = "0.11"
 base64 = "0.22"
 # Already in the tree via askama; used to build links that preserve the search term.
 percent-encoding = "2"
