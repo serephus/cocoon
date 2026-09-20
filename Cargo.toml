@@ -1,0 +1,25 @@
+[package]
+name = "cocoon"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+axum = "0.8"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+diesel = { version = "2.3", features = ["sqlite", "r2d2"] }
+diesel_migrations = { version = "2.3", features = ["sqlite"] }
+# Link a bundled SQLite so no system sqlite/pkg-config is required.
+libsqlite3-sys = { version = "0.38", features = ["bundled"] }
+hmac = "0.12"
+sha2 = "0.10"
+base64 = "0.22"
+# Already in the tree via askama; used to build links that preserve the search term.
+percent-encoding = "2"
+time = { version = "0.3", features = ["formatting", "parsing"] }
+askama = "0.16"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+thiserror = "2"
+anyhow = "1"

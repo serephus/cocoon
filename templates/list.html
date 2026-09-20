@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+
+{% block content %}
+    <form class="search" method="get" action="/">
+      <input type="search" name="q" value="{{ query }}" placeholder="search titles…"
+             aria-label="search titles">
+      <input type="hidden" name="revealed" value="{{ self.revealed_flag() }}">
+      <input type="hidden" name="private" value="{{ self.private_flag() }}">
+      <input type="hidden" name="sort" value="{{ sort }}">
+      <input type="hidden" name="order" value="{{ order }}">
+      <input type="hidden" name="per_page" value="{{ per_page }}">
+      <button type="submit">search</button>
+      {% if self.has_query() %}<a class="clear" href="{{ self.clear_search_url() }}">clear</a>{% endif %}
+    </form>
+
+    <div class="filters">
+      <span class="hint">show</span>
+      <a class="toggle{% if show_revealed %} on{% endif %}"
+         href="{{ self.toggle_revealed_url() }}"
+         title="show or hide revealed pastes">revealed</a>
+      <a class="toggle{% if show_private %} on{% endif %}"
+         href="{{ self.toggle_private_url() }}"
+         title="show or hide private pastes">private</a>
+      <span class="spacer"></span>
+      <span class="hint">click a column to sort</span>
+    </div>
+
+    <table>
+      <thead>
+        <tr>
+          <th>id</th>
+          <th>title</th>
+          <th>
+            <a class="{% if sort == "publish_at" %}active{% endif %}"
+               href="{{ self.publish_url() }}">publish at (UTC) <span class="arrow">{{ self.publish_arrow() }}</span></a>
+          </th>
+          <th>
+            <a class="{% if sort == "created_at" %}active{% endif %}"
+               href="{{ self.created_url() }}">created (UTC) <span class="arrow">{{ self.created_arrow() }}</span></a>
+          </th>
+          <th>status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for p in pastes %}
+        <tr>
+          <td class="id"><a href="/p/{{ p.id }}">{{ p.id }}</a></td>
+          <td class="title">{{ p.title }}</td>
+          <td>{{ p.publish_at }}</td>
+          <td>{{ p.created_at }}</td>
+          {% if p.revealed %}
+          <td>revealed</td>
+          {% else %}
+          <td class="scheduled">private &middot; in {{ p.reveal_in }}</td>
+          {% endif %}
+        </tr>
+        {% else %}
+        <tr><td colspan="5" class="empty">no pastes match</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    <nav>
+      {% if has_prev %}<a href="{{ self.prev_url() }}">&larr; prev</a>{% else %}<span></span>{% endif %}
+      <span class="spacer"></span>
+      <span>page {{ page }}</span>
+      <span class="spacer"></span>
+      {% if has_next %}<a href="{{ self.next_url() }}">next &rarr;</a>{% else %}<span></span>{% endif %}
+    </nav>
+{% endblock %}

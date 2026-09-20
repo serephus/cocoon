@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}cocoon{% endblock %}</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0d1117;
+      --fg: #c9d1d9;
+      --muted: #8b949e;
+      --border: #30363d;
+      --accent: #7c3aed;
+      --accent-fg: #ffffff;
+    }
+    * { box-sizing: border-box; }
+    body { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+           max-width: 60rem; margin: 2rem auto; padding: 0 1rem; line-height: 1.5;
+           background: var(--bg); color: var(--fg); }
+    a { color: inherit; }
+
+    header { margin-bottom: 1.5rem; }
+    h1 { margin: 0; font-size: 1.5rem; }
+    h1 a { text-decoration: none; }
+    .tagline { margin: 0.15rem 0 0; color: var(--muted); font-size: 0.9rem; }
+
+    /* Search */
+    .search { display: flex; gap: 0.5rem; align-items: center; margin: 1.5rem 0 0; }
+    .search input[type="search"] { flex: 1; min-width: 0; padding: 0.35rem 0.6rem; font: inherit;
+        background: var(--bg); color: var(--fg); border: 1px solid var(--border);
+        border-radius: 6px; }
+    .search input[type="search"]::placeholder { color: var(--muted); }
+    .search input[type="search"]:focus { outline: none; border-color: var(--accent); }
+    .search button { font: inherit; padding: 0.35rem 0.8rem; cursor: pointer;
+        background: var(--accent); color: var(--accent-fg); border: 1px solid var(--accent);
+        border-radius: 6px; }
+    .search button:hover { filter: brightness(1.1); }
+    .search .clear { color: var(--muted); text-decoration: none; font-size: 0.85rem; }
+    .search .clear:hover { color: var(--fg); text-decoration: underline; }
+
+    /* Visibility toggles */
+    .filters { display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap;
+               margin: 1rem 0 1.5rem; }
+    .toggle { display: inline-flex; align-items: center; padding: 0.3rem 0.8rem;
+              border: 1px solid var(--border); border-radius: 999px; text-decoration: none;
+              color: var(--muted); user-select: none;
+              transition: background-color 0.15s, border-color 0.15s, color 0.15s; }
+    .toggle:hover { border-color: var(--muted); color: var(--fg); }
+    .toggle.on { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+    .hint { color: var(--muted); font-size: 0.8rem; }
+    .filters .spacer { flex: 1; }
+
+    /* Listing table */
+    table { width: 100%; border-collapse: collapse; }
+    th, td { text-align: left; padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border); }
+    th { font-size: 0.8rem; text-transform: uppercase; color: var(--muted); }
+    th a { color: inherit; text-decoration: none; white-space: nowrap; }
+    th a:hover { color: var(--fg); text-decoration: underline; }
+    th a.active { color: var(--fg); }
+    .arrow { opacity: 0.75; }
+    td.id { font-weight: bold; }
+    td.title { max-width: 24rem; overflow-wrap: anywhere; }
+    .scheduled { color: var(--muted); }
+    .empty { text-align: center; color: var(--muted); padding: 2rem; }
+
+    /* Pagination */
+    nav { display: flex; gap: 1rem; align-items: center; margin-top: 1.5rem; }
+    nav .spacer { flex: 1; }
+    nav a { color: var(--muted); text-decoration: none; }
+    nav a:hover { color: var(--fg); text-decoration: underline; }
+
+    /* Error page */
+    .error { text-align: center; padding: 3rem 0; }
+    .error .code { font-size: 3rem; font-weight: bold; margin: 0; }
+    .error .message { color: var(--muted); }
+  </style>
+</head>
+<body>
+  <header>
+    <h1><a href="/">cocoon</a></h1>
+    <p class="tagline">time-locked pastebin</p>
+  </header>
+
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+
+{% block title %}{{ status }} — cocoon{% endblock %}
+
+{% block content %}
+    <div class="error">
+      <p class="code">{{ status }}</p>
+      <p class="message">{{ message }}</p>
+      <p><a href="/">&larr; back to listing</a></p>
+    </div>
+{% endblock %}

@@ -1,0 +1,101 @@
+# cocoon
+
+A **time-locked pastebin**. Submit text together with a publication timestamp;
+the content stays private until that moment, after which it is public forever.
+Pastes are anonymous, immutable, and never expire.
+
+Secrecy is **policy-based**: the server stores plaintext and simply refuses to
+serve it before the timestamp. The server operator can always read it. There is
+no encryption and no trust model to defeat a malicious operator.
+
+## Behaviour
+
+- Anonymous creation; no accounts.
+- The listing can be searched by title (case-insensitive substring match).
+- Each paste may carry an optional short `title` used as a public label in
+  listings. Titles are visible **immediately**, including before a scheduled
+  paste is revealed, so they must not contain secrets.
+- Pastes can never be modified or deleted.
+- Before `publish_at`, `GET /p/{id}` returns `425 Too Early` and the content is
+  withheld. The **id itself is public** immediately and appears in the listing.
+- A timestamp in the past simply produces an immediately public paste.
+- Timestamps are UTC (RFC 3339); the timestamp is optional and defaults to now.
+- Content is text only, at most 64 KiB, and empty content is allowed.
+
+## Identifiers
+
+`id = base64url(HMAC-SHA256(secret, "cocoon:v1\0" || publish_at || len(title) || title || len(content) || content)[..16])`
+
+- Fixed 128 bits → 22 URL-safe characters.
+- The `title` is part of the identity: the same content and timestamp submitted
+  with a different title is a different paste.
+- Deterministic for the server, but **not** computable by clients: the HMAC
+  secret prevents an offline dictionary attack against low-entropy content
+  before it is revealed.
+- Submitting the exact same `(content, publish_at)` twice is idempotent:
+  the first request returns `201`, later ones return `200` with the same id.
+- A true 128-bit collision would be rejected with `409` and never overwrite.
+
+## Endpoints
+
+| Method | Path | Description |
+| ------ | ---- | ----------- |
+| `POST` | `/api/paste` | Create a paste. JSON `{"content": "...", "title": "...", "publish_at": "..."}` (title and timestamp optional). Returns JSON `{id, url, title, publish_at, created_at}`. |
+| `GET`  | `/p/{id}`    | Raw `text/plain` content once public; `425` before; `404` if unknown. |
+| `GET`  | `/`          | HTML listing (metadata incl. title; never content). |
+| `GET`  | `/api/pastes`| JSON listing. |
+| `GET`  | `/healthz`   | Liveness probe. |
+
+The JSON listing (`/api/pastes`) accepts `page`, `per_page` (max 100),
+`status` (`all`/`revealed`/`scheduled`), `sort` (`created_at`/`publish_at`),
+`order` (`asc`/`desc`), `q` (case-insensitive title substring), and optional
+`from`/`to` RFC 3339 bounds on `publish_at`.
+
+The HTML listing uses the same parameters plus two independent visibility flags,
+`revealed=0|1` and `private=0|1`, and exposes the title search as a box at the
+top of the page. The visibility toggles and the sortable column headers are
+plain links: clicking one rewrites the URL (preserving the search term) and
+reloads — no JavaScript.
+
+Titles are limited to 256 bytes, must be a single line, and reject control and
+bidirectional-override characters. They are rendered HTML-escaped and never
+linkified.
+
+## Configuration
+
+| Variable | Default | Required | Meaning |
+| -------- | ------- | -------- | ------- |
+| `COCOON_HMAC_SECRET` | — | **yes** | HMAC key, at least 16 bytes. |
+| `COCOON_BIND` | `127.0.0.1:3000` | no | Listen address. |
+| `COCOON_DB` | `cocoon.db` | no | SQLite database path. |
+
+## Running
+
+```sh
+export COCOON_HMAC_SECRET="$(openssl rand -hex 32)"
+cargo run
+```
+
+The database and schema are created automatically on first start.
+
+## Testing
+
+```sh
+cargo test          # unit tests (identifier derivation/encoding)
+./scripts/smoke.sh  # end-to-end HTTP checks against a throwaway database
+```
+
+## Notes and caveats
+
+- The **server clock is the sole source of truth** for "now". NTP drift or a
+  clock change directly affects reveal times.
+- Keep `COCOON_HMAC_SECRET` stable. Rotating it changes the id derived for new
+  submissions; old rows still resolve, but a resubmission after rotation will
+  not deduplicate against the old row.
+- There is intentionally no rate limiting, captcha, or authentication.
+- Storage grows without bound, both in row count and on-disk size.
+
+## Stack
+
+`axum` + `tokio`, `diesel` (SQLite, with bundled libsqlite3) behind an `r2d2`
+pool, `askama` templates, `hmac`/`sha2`/`base64` for identifiers.

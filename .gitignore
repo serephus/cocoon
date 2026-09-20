@@ -1,0 +1,13 @@
+/.direnv
+/result
+
+
+# Added by cargo
+
+/target
+
+# Local database and env
+*.db
+*.db-wal
+*.db-shm
+.env
