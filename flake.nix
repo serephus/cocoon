@@ -17,6 +17,7 @@
 
   outputs =
     {
+      self,
       nixpkgs,
       flake-utils,
       nixit,
@@ -97,6 +98,16 @@
           };
         };
       };
+
+      # NixOS module. The package defaults to this flake's build for the
+      # host system, but can be overridden via services.cocoon-paste.package.
+      nixosModules.default =
+        { lib, pkgs, ... }:
+        {
+          imports = [ ./nix/module.nix ];
+          services.cocoon-paste.package =
+            lib.mkDefault self.packages.${pkgs.stdenv.hostPlatform.system}.default;
+        };
     }
     // flake-utils.lib.eachDefaultSystem (
       system:
