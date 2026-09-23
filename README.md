@@ -103,8 +103,11 @@ The database and schema are created automatically on first start.
 ## Testing
 
 ```sh
-cargo test          # unit tests (identifier derivation/encoding)
+cargo test          # unit tests (identifier derivation/encoding, config)
 ./scripts/smoke.sh  # end-to-end HTTP checks against a throwaway database
+
+# licenses, advisories, bans, sources (also run in CI)
+nix run nixpkgs#cargo-deny -- check
 ```
 
 ## NixOS module

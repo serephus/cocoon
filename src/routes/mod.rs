@@ -1,11 +1,17 @@
 pub mod api;
 pub mod web;
 
+use axum::Router;
+use axum::body::Body;
+use axum::extract::DefaultBodyLimit;
+use axum::http::Request;
 use axum::routing::{get, post};
-use axum::{Router, extract::DefaultBodyLimit};
 use diesel::prelude::*;
 use diesel::sqlite::Sqlite;
 use serde::{Deserialize, Serialize};
+use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
+use tower_http::trace::{DefaultOnFailure, DefaultOnResponse, TraceLayer};
+use tracing::Level;
 
 use crate::AppState;
 use crate::clock::{format_rfc3339, parse_rfc3339};
@@ -31,6 +37,29 @@ pub fn router(state: AppState) -> Router {
         // JSON body limit; the 64 KiB content limit is enforced manually so we
         // can return a precise 413.
         .layer(DefaultBodyLimit::max(1024 * 1024))
+        // Copy the request id onto the response (innermost of the three).
+        .layer(PropagateRequestIdLayer::x_request_id())
+        // Log each request at INFO, with the id attached to the span.
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(|request: &Request<Body>| {
+                    let request_id = request
+                        .headers()
+                        .get("x-request-id")
+                        .and_then(|value| value.to_str().ok())
+                        .unwrap_or("-");
+                    tracing::info_span!(
+                        "http",
+                        method = %request.method(),
+                        uri = %request.uri(),
+                        request_id = %request_id,
+                    )
+                })
+                .on_response(DefaultOnResponse::new().level(Level::INFO))
+                .on_failure(DefaultOnFailure::new().level(Level::ERROR)),
+        )
+        // Assign the id first so both the span and the response header see it.
+        .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
         .with_state(state)
 }
 
