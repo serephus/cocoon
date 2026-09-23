@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 mod clock;
 mod config;
 mod db;

@@ -2,10 +2,27 @@
 name = "cocoon"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.88"
+description = "A self-hostable time-locked pastebin"
+homepage = "https://github.com/serephus/cocoon"
+repository = "https://github.com/serephus/cocoon"
+readme = "README.md"
+license-file = "LICENSE"
+keywords = [
+  "pastebin",
+  "time-lock",
+  "self-hosted",
+  "axum",
+  "sqlite",
+]
+categories = [
+  "web-programming::http-server",
+]
 
 [dependencies]
 axum = "0.8"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
+tower-http = { version = "0.7", features = ["trace", "request-id"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 diesel = { version = "2.3", features = ["sqlite", "r2d2"] }

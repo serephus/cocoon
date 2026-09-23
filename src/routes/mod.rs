@@ -1,18 +1,25 @@
 pub mod api;
 pub mod web;
 
+use axum::Router;
+use axum::body::Body;
+use axum::extract::DefaultBodyLimit;
+use axum::http::Request;
 use axum::routing::{get, post};
-use axum::{Router, extract::DefaultBodyLimit};
 use diesel::prelude::*;
 use diesel::sqlite::Sqlite;
 use serde::{Deserialize, Serialize};
+use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
+use tower_http::trace::{DefaultOnFailure, DefaultOnResponse, TraceLayer};
+use tracing::Level;
 
 use crate::AppState;
-use crate::clock::{format_rfc3339, parse_rfc3339};
-use crate::db::models::PasteMeta;
+use crate::clock::{format_rfc3339, now_unix, parse_rfc3339};
+use crate::db::models::{NewPaste, PasteMeta};
 use crate::db::schema::pastes;
 use crate::error::AppError;
-use crate::id::encode_id;
+use crate::id::{compute_id, encode_id};
+use diesel::result::{DatabaseErrorKind, Error as DieselError};
 
 /// Maximum accepted content size (bytes).
 pub const MAX_CONTENT_BYTES: usize = 65_536;
@@ -24,6 +31,7 @@ pub const MAX_PER_PAGE: i64 = 100;
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/", get(web::list))
+        .route("/new", get(web::new_form).post(web::create))
         .route("/p/{id}", get(web::read))
         .route("/api/paste", post(api::create))
         .route("/api/pastes", get(api::list))
@@ -31,6 +39,29 @@ pub fn router(state: AppState) -> Router {
         // JSON body limit; the 64 KiB content limit is enforced manually so we
         // can return a precise 413.
         .layer(DefaultBodyLimit::max(1024 * 1024))
+        // Copy the request id onto the response (innermost of the three).
+        .layer(PropagateRequestIdLayer::x_request_id())
+        // Log each request at INFO, with the id attached to the span.
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(|request: &Request<Body>| {
+                    let request_id = request
+                        .headers()
+                        .get("x-request-id")
+                        .and_then(|value| value.to_str().ok())
+                        .unwrap_or("-");
+                    tracing::info_span!(
+                        "http",
+                        method = %request.method(),
+                        uri = %request.uri(),
+                        request_id = %request_id,
+                    )
+                })
+                .on_response(DefaultOnResponse::new().level(Level::INFO))
+                .on_failure(DefaultOnFailure::new().level(Level::ERROR)),
+        )
+        // Assign the id first so both the span and the response header see it.
+        .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
         .with_state(state)
 }
 
@@ -81,6 +112,101 @@ where
     })
     .await
     .map_err(|e| AppError::Internal(format!("blocking task failed: {e}")))?
+}
+
+// ---------------------------------------------------------------------------
+// Creation
+// ---------------------------------------------------------------------------
+
+/// Metadata for a freshly created (or deduplicated) paste.
+pub struct CreatedPaste {
+    pub id: String,
+    pub title: String,
+    pub publish_at: i64,
+    pub created_at: i64,
+}
+
+/// Shared creation path used by the JSON API and the web form.
+///
+/// Validates and inserts a paste. The returned `bool` is `true` for a new
+/// paste and `false` for an exact duplicate (idempotent).
+pub async fn create_paste(
+    state: &AppState,
+    title: String,
+    content: String,
+    publish_at: i64,
+) -> Result<(bool, CreatedPaste), AppError> {
+    if content.len() > MAX_CONTENT_BYTES {
+        return Err(AppError::PayloadTooLarge);
+    }
+    validate_title(&title)?;
+
+    let created_at = now_unix();
+    let content = content.into_bytes();
+    let id = compute_id(&state.secret, publish_at, title.as_bytes(), &content);
+    let id_string = encode_id(&id);
+
+    let title_for_db = title.clone();
+    let outcome = db(state, move |conn| {
+        // Scope the insert value so the borrows end before we compare below.
+        let inserted = {
+            let new = NewPaste {
+                id: &id,
+                title: &title_for_db,
+                content: &content,
+                publish_at,
+                created_at,
+            };
+            diesel::insert_into(pastes::table)
+                .values(&new)
+                .execute(conn)
+        };
+
+        match inserted {
+            Ok(_) => Ok((true, created_at)),
+            Err(DieselError::DatabaseError(DatabaseErrorKind::UniqueViolation, _)) => {
+                let existing = pastes::table
+                    .filter(pastes::id.eq(id.to_vec()))
+                    .select((
+                        pastes::title,
+                        pastes::content,
+                        pastes::publish_at,
+                        pastes::created_at,
+                    ))
+                    .first::<(String, Vec<u8>, i64, i64)>(conn)
+                    .optional()?;
+
+                match existing {
+                    // Identical title + content + timestamp: idempotent success.
+                    Some((stored_title, stored_content, stored_publish_at, stored_created_at))
+                        if stored_title == title_for_db
+                            && stored_content == content
+                            && stored_publish_at == publish_at =>
+                    {
+                        Ok((false, stored_created_at))
+                    }
+                    // A genuine HMAC collision: never overwrite.
+                    Some(_) => Err(AppError::Conflict),
+                    None => Err(AppError::Internal(
+                        "unique violation but no existing row found".to_string(),
+                    )),
+                }
+            }
+            Err(e) => Err(AppError::Db(e)),
+        }
+    })
+    .await?;
+
+    let (created, stored_created_at) = outcome;
+    Ok((
+        created,
+        CreatedPaste {
+            id: id_string,
+            title,
+            publish_at,
+            created_at: stored_created_at,
+        },
+    ))
 }
 
 // ---------------------------------------------------------------------------

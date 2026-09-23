@@ -1,7 +1,8 @@
 use askama::Template;
+use axum::Form;
 use axum::extract::{Path, Query, State};
 use axum::http::header;
-use axum::response::{Html, IntoResponse, Response};
+use axum::response::{Html, IntoResponse, Redirect, Response};
 use diesel::prelude::*;
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use serde::Deserialize;
@@ -11,7 +12,7 @@ use crate::clock::{format_rfc3339, humanize_delta, now_unix};
 use crate::db::schema::pastes;
 use crate::error::AppError;
 use crate::id::{decode_id, encode_id};
-use crate::routes::{ListOptions, ListParams, db, fetch_list};
+use crate::routes::{ListOptions, ListParams, create_paste, db, fetch_list};
 
 /// Query parameters for the HTML listing.
 ///
@@ -139,6 +140,106 @@ pub async fn read(
         content,
     )
         .into_response())
+}
+
+// ---------------------------------------------------------------------------
+// Creation form
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Default, Deserialize)]
+pub struct NewPasteForm {
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub content: String,
+    #[serde(default)]
+    pub publish_at: Option<String>,
+}
+
+impl NewPasteForm {
+    fn publish_at_raw(&self) -> &str {
+        self.publish_at.as_deref().unwrap_or("")
+    }
+}
+
+/// `GET /new`
+pub async fn new_form() -> Result<Response, PageError> {
+    render_new(None, "", "", "")
+}
+
+/// `POST /new`
+pub async fn create(
+    State(state): State<AppState>,
+    Form(form): Form<NewPasteForm>,
+) -> Result<Response, PageError> {
+    let publish_at = match parse_publish_at(form.publish_at.as_deref()) {
+        Ok(value) => value,
+        Err(message) => {
+            return render_new(
+                Some(&message),
+                &form.title,
+                &form.content,
+                form.publish_at_raw(),
+            );
+        }
+    };
+
+    match create_paste(&state, form.title.clone(), form.content.clone(), publish_at).await {
+        // The listing sorts newest first, so the new paste shows up at the top.
+        Ok(_) => Ok(Redirect::to("/").into_response()),
+        Err(AppError::BadRequest(message)) => render_new(
+            Some(&message),
+            &form.title,
+            &form.content,
+            form.publish_at_raw(),
+        ),
+        Err(AppError::PayloadTooLarge) => render_new(
+            Some("content exceeds 65536 bytes"),
+            &form.title,
+            &form.content,
+            form.publish_at_raw(),
+        ),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Interpret the form's `datetime-local` value as UTC; empty means "now".
+fn parse_publish_at(raw: Option<&str>) -> Result<i64, String> {
+    let Some(raw) = raw.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(now_unix());
+    };
+    // `datetime-local` carries no timezone, so append an explicit UTC offset.
+    let rfc3339 = match raw.len() {
+        16 => format!("{raw}:00Z"),
+        19 => format!("{raw}Z"),
+        _ => raw.to_string(),
+    };
+    crate::clock::parse_rfc3339(&rfc3339)
+}
+
+fn render_new(
+    error: Option<&str>,
+    title: &str,
+    content: &str,
+    publish_at: &str,
+) -> Result<Response, PageError> {
+    let tmpl = NewTemplate {
+        error: error.unwrap_or_default().to_string(),
+        title: title.to_string(),
+        content: content.to_string(),
+        publish_at: publish_at.to_string(),
+    };
+    let html = tmpl.render().map_err(|e| PageError(AppError::from(e)))?;
+    Ok(Html(html).into_response())
+}
+
+#[derive(Template)]
+#[template(path = "new.html")]
+struct NewTemplate {
+    error: String,
+    title: String,
+    content: String,
+    publish_at: String,
 }
 
 // ---------------------------------------------------------------------------

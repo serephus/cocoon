@@ -1,0 +1,38 @@
+# cargo-deny configuration.
+#
+#   nix run nixpkgs#cargo-deny -- check
+#
+# `cocoon` itself ships the GLWT public license as a file (see LICENSE) rather
+# than an SPDX identifier, and cargo-deny reads that from `license-file`.
+
+[advisories]
+yanked = "warn"
+
+[licenses]
+confidence-threshold = 0.8
+allow = [
+  "0BSD",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "BSL-1.0",
+  "CC0-1.0",
+  "GLWTPL",
+  "ISC",
+  "MIT",
+  "MPL-2.0",
+  "Unicode-3.0",
+  "Unlicense",
+  "WTFPL",
+  "Zlib",
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = [ "https://github.com/rust-lang/crates.io-index" ]

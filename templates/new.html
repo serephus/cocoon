@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+
+{% block title %}new paste — cocoon{% endblock %}
+
+{% block content %}
+    {% if !error.is_empty() %}<p class="error-banner">{{ error }}</p>{% endif %}
+
+    <form class="new" method="post" action="/new">
+      <label>title
+        <input type="text" name="title" maxlength="256" value="{{ title }}"
+               placeholder="optional, shown in the listing">
+      </label>
+
+      <label>content
+        <textarea name="content" rows="16" placeholder="paste content…">{{ content }}</textarea>
+      </label>
+
+      <label>publish at (UTC, optional)
+        <input type="datetime-local" name="publish_at" step="1" value="{{ publish_at }}">
+      </label>
+
+      <button type="submit">create paste</button>
+    </form>
+{% endblock %}

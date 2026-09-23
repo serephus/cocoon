@@ -43,13 +43,23 @@ jobs:
       run: cargo fmt --check
 
     - name: Clippy Check
-      run: cargo clippy -- -D warnings
+      run: cargo clippy --all-targets -- -D warnings
 
     - name: Build
       run: cargo build --verbose
 
     - name: Test
       run: cargo test --verbose
+
+    - name: Smoke test
+      run: ./scripts/smoke.sh
+
+  deny:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: EmbarkStudios/cargo-deny-action@v2
 
   nix-build:
     name: Nix Build
