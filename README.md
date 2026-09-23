@@ -65,9 +65,31 @@ linkified.
 
 | Variable | Default | Required | Meaning |
 | -------- | ------- | -------- | ------- |
-| `COCOON_HMAC_SECRET` | — | **yes** | HMAC key, at least 16 bytes. |
+| `COCOON_HMAC_SECRET` | — | one of these | HMAC key as a literal value, at least 16 bytes. |
+| `COCOON_HMAC_SECRET_FILE` | — | one of these | Path to a file containing the HMAC key. |
 | `COCOON_BIND` | `127.0.0.1:3000` | no | Listen address. |
 | `COCOON_DB` | `cocoon.db` | no | SQLite database path. |
+
+Exactly one of `COCOON_HMAC_SECRET` and `COCOON_HMAC_SECRET_FILE` must be set;
+setting both is a startup error.
+
+### Providing the secret from a file
+
+For Docker secrets, Kubernetes mounted secrets, or systemd
+`LoadCredential`/`$CREDENTIALS_DIRECTORY`, point `COCOON_HMAC_SECRET_FILE` at
+the file instead of exporting the value:
+
+```sh
+openssl rand -hex 32 > /run/secrets/cocoon_hmac
+# chmod 600 /run/secrets/cocoon_hmac
+export COCOON_HMAC_SECRET_FILE=/run/secrets/cocoon_hmac
+```
+
+The file is read once at startup as raw bytes. A single trailing newline (`\n`
+or `\r\n`) is stripped, so `echo -n`/`printf` and editor-written files behave
+the same; all other bytes are significant. On Unix, a non-fatal warning is
+logged if the file is readable by group or others. The secret is never logged.
+
 
 ## Running
 
