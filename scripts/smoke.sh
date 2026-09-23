@@ -154,6 +154,16 @@ curl -sS -o /dev/null -X POST "$BASE/api/paste" \
 check "$(curl -sS "$BASE/" | grep -c '<b>bold</b>')" "0" "html listing escapes raw title"
 check "$(curl -sS "$BASE/" | grep -c '&#60;b&#62;bold&#60;/b&#62;')" "1" "html listing shows escaped title"
 
+# web creation form
+check "$(curl -sS -o /dev/null -w '%{http_code}' "$BASE/new")" "200" "web form loads"
+check "$(curl -sS "$BASE/" | grep -c 'href="/new"')" "1" "listing links to new form"
+check "$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$BASE/new" \
+  --data-urlencode 'title=Web Form' --data-urlencode 'content=from the web form' \
+  --data-urlencode 'publish_at=2030-01-01T00:00')" "303" "web form create redirects"
+check "$(curl -sS "$BASE/" | grep -c 'Web Form')" "1" "web-created paste appears in listing"
+check "$(curl -sS -X POST "$BASE/new" --data-urlencode 'title=x' --data-urlencode 'content=y' \
+  --data-urlencode 'publish_at=nope' | grep -c 'class="error-banner"')" "1" "web form invalid date re-renders with error"
+
 # validation and error paths
 check "$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$BASE/api/paste" \
   -H 'content-type: application/json' -d '{"content":"x","publish_at":"nope"}')" "400" "invalid timestamp -> 400"

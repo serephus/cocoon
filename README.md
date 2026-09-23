@@ -41,6 +41,8 @@ no encryption and no trust model to defeat a malicious operator.
 | Method | Path | Description |
 | ------ | ---- | ----------- |
 | `POST` | `/api/paste` | Create a paste. JSON `{"content": "...", "title": "...", "publish_at": "..."}` (title and timestamp optional). Returns JSON `{id, url, title, publish_at, created_at}`. |
+| `GET`  | `/new`       | HTML form for creating a paste. |
+| `POST` | `/new`       | Create from the web form and redirect to the listing; re-renders the form with an error on invalid input. |
 | `GET`  | `/p/{id}`    | Raw `text/plain` content once public; `425` before; `404` if unknown. |
 | `GET`  | `/`          | HTML listing (metadata incl. title; never content). |
 | `GET`  | `/api/pastes`| JSON listing. |
@@ -59,7 +61,8 @@ reloads — no JavaScript.
 
 Titles are limited to 256 bytes, must be a single line, and reject control and
 bidirectional-override characters. They are rendered HTML-escaped and never
-linkified.
+linkified. The web form's publish time is entered with `datetime-local` and
+interpreted as **UTC**; leaving it empty publishes immediately.
 
 ## Configuration
 
