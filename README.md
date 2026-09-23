@@ -107,6 +107,38 @@ cargo test          # unit tests (identifier derivation/encoding)
 ./scripts/smoke.sh  # end-to-end HTTP checks against a throwaway database
 ```
 
+## NixOS module
+
+The flake exposes `nixosModules.default`, under the namespace
+`services.cocoon-paste` (`services.cocoon` is already taken by an unrelated
+nixpkgs web app). The package defaults to this flake's build, but can be
+overridden with `services.cocoon-paste.package`.
+
+```nix
+{
+  inputs.cocoon.url = "github:serephus/cocoon";
+
+  # in a NixOS configuration
+  imports = [ cocoon.nixosModules.default ];
+
+  services.cocoon-paste = {
+    enable = true;
+    settings = {
+      COCOON_BIND = "0.0.0.0:3000";
+      # COCOON_DB defaults to /var/lib/cocoon-paste/cocoon.db
+    };
+    secretFile = "/run/secrets/cocoon_hmac";
+    openFirewall = true;
+  };
+}
+```
+
+The service runs as a `DynamicUser` with `StateDirectory = "cocoon-paste"`, so
+the SQLite database lives in `/var/lib/cocoon-paste`. `secretFile` is delivered
+as a systemd credential and exposed to the process as `%d/hmac`, so the secret
+never enters the Nix store. `settings` is a free-form `COCOON_*` environment
+map; keep secrets out of it and use `secretFile` (or `environmentFile`).
+
 ## Notes and caveats
 
 - The **server clock is the sole source of truth** for "now". NTP drift or a
