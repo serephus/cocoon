@@ -12,6 +12,7 @@ BASE="http://127.0.0.1:${PORT}"
 
 pass=0
 fail=0
+FILE_PID=""
 check() { # check <actual> <expected> <label>
   if [ "$1" = "$2" ]; then
     echo "PASS: $3 ($1)"
@@ -22,12 +23,26 @@ check() { # check <actual> <expected> <label>
   fi
 }
 
+expect_failure() { # expect_failure <label> <cmd...>
+  local label="$1"
+  shift
+  timeout 5 "$@" >/dev/null 2>&1
+  local rc=$?
+  if [ "$rc" -eq 0 ] || [ "$rc" -eq 124 ]; then
+    echo "FAIL: $label (exit $rc)"
+    fail=$((fail + 1))
+  else
+    echo "PASS: $label (exit $rc)"
+    pass=$((pass + 1))
+  fi
+}
+
 cargo build -q || exit 1
 rm -f "$DB" "$DB"-*
 COCOON_HMAC_SECRET="$SECRET" COCOON_BIND="127.0.0.1:${PORT}" COCOON_DB="$DB" \
   ./target/debug/cocoon >/tmp/cocoon-smoke-server.log 2>&1 &
 SERVER_PID=$!
-trap 'kill "$SERVER_PID" 2>/dev/null' EXIT
+trap 'kill "$SERVER_PID" "$FILE_PID" 2>/dev/null' EXIT
 
 for _ in $(seq 1 50); do
   curl -sf "$BASE/healthz" >/dev/null 2>&1 && break
@@ -154,6 +169,49 @@ check "$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$BASE/api/paste" \
   -H 'content-type: application/json' -d "$big")" "413" "70000 bytes -> 413"
 check "$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$BASE/api/paste" \
   -H 'content-type: application/json' -d '{"content":""}')" "201" "empty content -> 201"
+
+# --- secret from a file ---
+SECRET_FILE=$(mktemp)
+# Trailing newline on purpose: normalization must strip it so the derived ids
+# match the env-var server below.
+printf '%s\n' "$SECRET" >"$SECRET_FILE"
+FILE_PORT=$((PORT + 1))
+FILE_DB="${DB}.file"
+rm -f "$FILE_DB" "$FILE_DB"-*
+COCOON_HMAC_SECRET_FILE="$SECRET_FILE" COCOON_BIND="127.0.0.1:${FILE_PORT}" COCOON_DB="$FILE_DB" \
+  ./target/debug/cocoon >>/tmp/cocoon-smoke-server.log 2>&1 &
+FILE_PID=$!
+for _ in $(seq 1 50); do
+  curl -sf "http://127.0.0.1:${FILE_PORT}/healthz" >/dev/null 2>&1 && break
+  sleep 0.1
+done
+FBASE="http://127.0.0.1:${FILE_PORT}"
+check "$(curl -sS -o /dev/null -w '%{http_code}' "$FBASE/healthz")" "200" "file secret: server starts"
+check "$(curl -sS -X POST "$FBASE/api/paste" -H 'content-type: application/json' \
+  -d '{"content":"from a file","title":"FileSecret"}' | jq -r .title)" "FileSecret" "file secret: create works"
+
+# Same secret via env and via file must derive the same id for identical input.
+env_id=$(curl -sS -X POST "$BASE/api/paste" -H 'content-type: application/json' \
+  -d '{"content":"parity","title":"Parity","publish_at":"2035-01-01T00:00:00Z"}' | jq -r .id)
+file_id=$(curl -sS -X POST "$FBASE/api/paste" -H 'content-type: application/json' \
+  -d '{"content":"parity","title":"Parity","publish_at":"2035-01-01T00:00:00Z"}' | jq -r .id)
+check "$file_id" "$env_id" "file secret matches env secret"
+kill "$FILE_PID" 2>/dev/null
+FILE_PID=""
+
+# --- secret misconfiguration is fatal ---
+expect_failure "both secret sources rejected" env \
+  COCOON_HMAC_SECRET="$SECRET" COCOON_HMAC_SECRET_FILE="$SECRET_FILE" \
+  COCOON_BIND="127.0.0.1:$((PORT + 2))" COCOON_DB="${DB}.never1" ./target/debug/cocoon
+expect_failure "missing secret file rejected" env \
+  COCOON_HMAC_SECRET_FILE=/nonexistent/cocoon-secret \
+  COCOON_BIND="127.0.0.1:$((PORT + 3))" COCOON_DB="${DB}.never2" ./target/debug/cocoon
+SHORT_FILE=$(mktemp)
+printf 'short' >"$SHORT_FILE"
+expect_failure "short secret file rejected" env \
+  COCOON_HMAC_SECRET_FILE="$SHORT_FILE" \
+  COCOON_BIND="127.0.0.1:$((PORT + 4))" COCOON_DB="${DB}.never3" ./target/debug/cocoon
+rm -f "$SECRET_FILE" "$SHORT_FILE" "$FILE_DB" "$FILE_DB"-*
 
 echo "-----------------------------------"
 echo "PASS=$pass FAIL=$fail"
