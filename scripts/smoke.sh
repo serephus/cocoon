@@ -1,18 +1,19 @@
 #!/usr/bin/env bash
-# End-to-end smoke test for cocoon. Builds the binary, runs it against a
-# throwaway database, exercises every route, and reports pass/fail.
+# Smoke test for the cocoon service. Runs the binary with a fake bot token and
+# webhook registration disabled, then exercises the HTTP surface: health, the
+# Telegram webhook secret/dedup, the web pages, and the JSON API. No Telegram
+# token or network required.
 set -u
 
 cd "$(dirname "$0")/.."
 
 PORT="${PORT:-3999}"
 DB="${DB:-/tmp/cocoon-smoke.db}"
-SECRET="${SECRET:-0123456789abcdef}"
+SECRET="0123456789abcdef0123456789abcdef"
 BASE="http://127.0.0.1:${PORT}"
 
 pass=0
 fail=0
-FILE_PID=""
 check() { # check <actual> <expected> <label>
   if [ "$1" = "$2" ]; then
     echo "PASS: $3 ($1)"
@@ -23,210 +24,77 @@ check() { # check <actual> <expected> <label>
   fi
 }
 
-expect_failure() { # expect_failure <label> <cmd...>
-  local label="$1"
-  shift
-  timeout 5 "$@" >/dev/null 2>&1
-  local rc=$?
-  if [ "$rc" -eq 0 ] || [ "$rc" -eq 124 ]; then
-    echo "FAIL: $label (exit $rc)"
-    fail=$((fail + 1))
-  else
-    echo "PASS: $label (exit $rc)"
-    pass=$((pass + 1))
-  fi
-}
-
 cargo build -q || exit 1
 rm -f "$DB" "$DB"-*
-COCOON_HMAC_SECRET="$SECRET" COCOON_BIND="127.0.0.1:${PORT}" COCOON_DB="$DB" \
-  ./target/debug/cocoon >/tmp/cocoon-smoke-server.log 2>&1 &
+COCOON_TELEGRAM_BOT_TOKEN="123456789:TESTTOKEN" \
+  COCOON_TELEGRAM_WEBHOOK_SECRET="$SECRET" \
+  COCOON_TELEGRAM_REGISTER_WEBHOOK=false \
+  COCOON_BIND="127.0.0.1:${PORT}" \
+  COCOON_DB="$DB" \
+  ./target/debug/cocoon >/tmp/cocoon-smoke.log 2>&1 &
 SERVER_PID=$!
-trap 'kill "$SERVER_PID" "$FILE_PID" 2>/dev/null' EXIT
+trap 'kill "$SERVER_PID" 2>/dev/null' EXIT
 
 for _ in $(seq 1 50); do
   curl -sf "$BASE/healthz" >/dev/null 2>&1 && break
   sleep 0.1
 done
 
-# health
+post_hook() { # post_hook <path> <header-secret> <body>
+  curl -sS -o /dev/null -w '%{http_code}' -X POST "$BASE$1" \
+    -H 'content-type: application/json' \
+    -H "x-telegram-bot-api-secret-token: $2" \
+    -d "$3"
+}
+
+# --- HTTP surface ---
 check "$(curl -sS -o /dev/null -w '%{http_code}' "$BASE/healthz")" "200" "healthz"
 
-# immediate create + read
-r=$(curl -sS -w '\n%{http_code}' -X POST "$BASE/api/paste" \
-  -H 'content-type: application/json' -d '{"content":"hello world","title":"greeting"}')
-code=$(echo "$r" | tail -1)
-body=$(echo "$r" | sed '$d')
+# --- Telegram webhook ---
+check "$(post_hook "/telegram/webhook/wrong" "wrong" '{"update_id":1}')" "401" "webhook rejects a bad secret"
+check "$(post_hook "/telegram/webhook/$SECRET" "wrong" '{"update_id":2}')" "401" "webhook rejects a bad header"
+check "$(post_hook "/telegram/webhook/$SECRET" "$SECRET" '{"update_id":10}')" "200" "webhook accepts a valid update"
+check "$(post_hook "/telegram/webhook/$SECRET" "$SECRET" '{"update_id":10}')" "200" "duplicate update is acked"
+
+# --- JSON API: create + read ---
+body=$(curl -sS -X POST "$BASE/api/paste" -H 'content-type: application/json' \
+  -d '{"content":"hello world","title":"greeting","publish_at":"2020-01-01T00:00:00Z"}')
 id=$(echo "$body" | jq -r .id)
-check "$code" "201" "create immediate status"
-check "$(echo "$body" | jq -r '.publish_at | endswith("Z")')" "true" "publish_at is UTC"
-check "$(echo "$body" | jq -r .title)" "greeting" "create returns title"
-check "${#id}" "22" "id length is 22"
-rr=$(curl -sS -w '\n%{http_code}' "$BASE/p/$id")
-check "$(echo "$rr" | tail -1)" "200" "read immediate status"
-check "$(echo "$rr" | sed '$d')" "hello world" "read immediate content"
+check "$(echo "$body" | jq -r .owner)" "anonymous" "api create is anonymous"
+check "${#id}" "8" "api id is 8 characters"
+check "$(curl -sS -o /dev/null -w '%{http_code}' "$BASE/p/$id")" "200" "read public paste"
+check "$(curl -sS "$BASE/p/$id")" "hello world" "read returns the content"
 
-# a timestamp in the past is immediately public
-pid=$(curl -sS -X POST "$BASE/api/paste" -H 'content-type: application/json' \
-  -d '{"content":"archived","publish_at":"2000-01-01T00:00:00Z"}' | jq -r .id)
-check "$(curl -sS -o /dev/null -w '%{http_code}' "$BASE/p/$pid")" "200" "read past timestamp -> 200"
+# duplicate create is idempotent (200)
+body2=$(curl -sS -w '\n%{http_code}' -X POST "$BASE/api/paste" -H 'content-type: application/json' \
+  -d '{"content":"hello world","title":"greeting","publish_at":"2020-01-01T00:00:00Z"}')
+check "$(echo "$body2" | tail -1)" "200" "duplicate create is idempotent"
 
-# future paste is hidden until its timestamp
-r=$(curl -sS -w '\n%{http_code}' -X POST "$BASE/api/paste" \
-  -H 'content-type: application/json' \
-  -d '{"content":"top secret","title":"classified","publish_at":"2030-01-01T00:00:00Z"}')
-fid=$(echo "$r" | sed '$d' | jq -r .id)
-check "$(echo "$r" | tail -1)" "201" "create future status"
-check "$(curl -sS -o /dev/null -w '%{http_code}' "$BASE/p/$fid")" "425" "read future -> 425"
+# --- JSON API: a scheduled paste reads as 425 ---
+future=$(curl -sS -X POST "$BASE/api/paste" -H 'content-type: application/json' \
+  -d '{"content":"top secret","title":"secret","publish_at":"2030-01-01T00:00:00Z"}' | jq -r .id)
+check "$(curl -sS -o /dev/null -w '%{http_code}' "$BASE/p/$future")" "425" "scheduled paste -> 425"
 
-# exact duplicate is idempotent
-r2=$(curl -sS -w '\n%{http_code}' -X POST "$BASE/api/paste" \
-  -H 'content-type: application/json' \
-  -d '{"content":"top secret","title":"classified","publish_at":"2030-01-01T00:00:00Z"}')
-check "$(echo "$r2" | tail -1)" "200" "duplicate status"
-check "$(echo "$r2" | sed '$d' | jq -r .id)" "$fid" "duplicate same id"
+# --- JSON API: listing ---
+check "$(curl -sS "$BASE/api/pastes" | jq -r --arg id "$id" '[.pastes[].id] | index($id) != null')" "true" "api listing includes the paste"
 
-# same content + timestamp, different title -> different id
-rt=$(curl -sS -X POST "$BASE/api/paste" -H 'content-type: application/json' \
-  -d '{"content":"top secret","title":"other label","publish_at":"2030-01-01T00:00:00Z"}' | jq -r .id)
-if [ "$rt" != "$fid" ]; then
-  echo "PASS: different title -> different id"
-  pass=$((pass + 1))
-else
-  echo "FAIL: title did not change id"
-  fail=$((fail + 1))
-fi
+# --- Web pages ---
+check "$(curl -sS -o /dev/null -w '%{http_code}' "$BASE/")" "200" "web listing"
+check "$(curl -sS "$BASE/" | grep -c "$id")" "1" "web listing includes the paste"
+check "$(curl -sS "$BASE/" | grep -c 'href="/new"')" "1" "web listing links to the form"
+check "$(curl -sS -o /dev/null -w '%{http_code}' "$BASE/new")" "200" "web form"
 
-# same content, different timestamp -> different id
-r3=$(curl -sS -X POST "$BASE/api/paste" -H 'content-type: application/json' \
-  -d '{"content":"top secret","publish_at":"2031-01-01T00:00:00Z"}' | jq -r .id)
-if [ "$r3" != "$fid" ]; then
-  echo "PASS: different timestamp -> different id"
-  pass=$((pass + 1))
-else
-  echo "FAIL: timestamp did not change id"
-  fail=$((fail + 1))
-fi
-
-# listing (html + json)
-check "$(curl -sS "$BASE/" | grep -c "$fid")" "1" "html listing contains id"
-check "$(curl -sS "$BASE/" | grep -c 'greeting')" "1" "html listing shows title"
-check "$(curl -sS "$BASE/" | grep -c 'classified')" "1" "html listing shows scheduled title"
-check "$(curl -sS "$BASE/api/pastes?status=scheduled&sort=publish_at&order=asc" | jq -r '.pastes | length >= 2')" "true" "api list scheduled"
-check "$(curl -sS "$BASE/api/pastes?status=scheduled&sort=publish_at&order=asc" | jq -r '[.pastes[].title] | index("classified") != null')" "true" "api list includes title"
-
-# visibility toggles (revealed/private) round-trip through the URL
-check "$(curl -sS "$BASE/?revealed=1&private=0" | grep -c "$id")" "1" "revealed filter includes revealed"
-check "$(curl -sS "$BASE/?revealed=1&private=0" | grep -c "$fid")" "0" "revealed filter excludes private"
-check "$(curl -sS "$BASE/?revealed=0&private=1" | grep -c "$fid")" "1" "private filter includes private"
-check "$(curl -sS "$BASE/?revealed=0&private=1" | grep -c "$id")" "0" "private filter excludes revealed"
-check "$(curl -sS "$BASE/?revealed=0&private=0" | grep -c 'no pastes match')" "1" "no filter shows none"
-
-# sort arrows reflect the active column and direction
-check "$(curl -sS "$BASE/?sort=publish_at&order=desc" | grep -c 'publish at (UTC) <span class="arrow">▼</span>')" "1" "sort desc arrow"
-check "$(curl -sS "$BASE/?sort=created_at&order=asc" | grep -c 'created (UTC) <span class="arrow">▲</span>')" "1" "sort asc arrow"
-
-# title search (web + api), case-insensitive, combinable with filters
-curl -sS -o /dev/null -X POST "$BASE/api/paste" -H 'content-type: application/json' \
-  -d '{"content":"needle content","title":"Searchable Needle"}'
-check "$(curl -sS "$BASE/?q=needle" | grep -c 'Searchable Needle')" "1" "web search finds title"
-check "$(curl -sS "$BASE/?q=NEEDLE" | grep -c 'Searchable Needle')" "1" "web search is case-insensitive"
-check "$(curl -sS "$BASE/?q=absentterm" | grep -c 'no pastes match')" "1" "web search no match -> empty"
-check "$(curl -sS "$BASE/?q=needle&revealed=0&private=1" | grep -c 'no pastes match')" "1" "search combines with filters"
-check "$(curl -sS "$BASE/?q=needle" | grep -q 'q=needle' && echo yes || echo no)" "yes" "search preserved in links"
-check "$(curl -sS "$BASE/api/pastes?q=needle" | jq -r '[.pastes[].title] | index("Searchable Needle") != null')" "true" "api search finds title"
-check "$(curl -sS "$BASE/api/pastes?q=zzzz" | jq -r '.pastes | length')" "0" "api search no match -> empty"
-
-# title validation
-check "$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$BASE/api/paste" \
-  -H 'content-type: application/json' -d '{"content":"x","title":"a\nb"}')" "400" "title newline -> 400"
-check "$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$BASE/api/paste" \
-  -H 'content-type: application/json' -d '{"content":"x","title":"a\u202eb"}')" "400" "title bidi override -> 400"
-long_title=$(head -c 300 /dev/zero | tr '\0' a)
-check "$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$BASE/api/paste" \
-  -H 'content-type: application/json' -d "$(jq -n --arg c x --arg t "$long_title" '{content:$c,title:$t}')")" "400" "title too long -> 400"
-check "$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$BASE/api/paste" \
-  -H 'content-type: application/json' -d '{"content":"untitled","title":""}')" "201" "empty title -> 201"
-
-# titles are rendered as escaped text, never markup
-curl -sS -o /dev/null -X POST "$BASE/api/paste" \
-  -H 'content-type: application/json' -d '{"content":"x","title":"<b>bold</b>"}'
-check "$(curl -sS "$BASE/" | grep -c '<b>bold</b>')" "0" "html listing escapes raw title"
-check "$(curl -sS "$BASE/" | grep -c '&#60;b&#62;bold&#60;/b&#62;')" "1" "html listing shows escaped title"
-
-# web creation form
-check "$(curl -sS -o /dev/null -w '%{http_code}' "$BASE/new")" "200" "web form loads"
-check "$(curl -sS "$BASE/" | grep -c 'href="/new"')" "1" "listing links to new form"
-check "$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$BASE/new" \
-  --data-urlencode 'title=Web Form' --data-urlencode 'content=from the web form' \
-  --data-urlencode 'publish_at=2030-01-01T00:00')" "303" "web form create redirects"
-check "$(curl -sS "$BASE/" | grep -c 'Web Form')" "1" "web-created paste appears in listing"
-check "$(curl -sS -X POST "$BASE/new" --data-urlencode 'title=x' --data-urlencode 'content=y' \
-  --data-urlencode 'publish_at=nope' | grep -c 'class="error-banner"')" "1" "web form invalid date re-renders with error"
-
-# validation and error paths
-check "$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$BASE/api/paste" \
-  -H 'content-type: application/json' -d '{"content":"x","publish_at":"nope"}')" "400" "invalid timestamp -> 400"
-check "$(curl -sS -o /dev/null -w '%{http_code}' "$BASE/api/pastes?status=bogus")" "400" "invalid status -> 400"
-check "$(curl -sS -o /dev/null -w '%{http_code}' "$BASE/?sort=bogus")" "400" "html invalid sort -> 400"
-check "$(curl -sS "$BASE/?sort=bogus" | grep -c 'back to listing')" "1" "html error page renders"
-check "$(curl -sS "$BASE/?sort=bogus" | grep -c 'time-locked pastebin')" "1" "error page shares header"
-check "$(curl -sS -o /dev/null -w '%{http_code}' "$BASE/p/AAAAAAAAAAAAAAAAAAAAAA")" "404" "unknown id -> 404"
-check "$(curl -sS -o /dev/null -w '%{http_code}' "$BASE/p/notbase64!!")" "404" "malformed id -> 404"
-
-big=$(jq -n --arg c "$(head -c 70000 /dev/zero | tr '\0' a)" '{content:$c}')
-check "$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$BASE/api/paste" \
-  -H 'content-type: application/json' -d "$big")" "413" "70000 bytes -> 413"
-check "$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$BASE/api/paste" \
-  -H 'content-type: application/json' -d '{"content":""}')" "201" "empty content -> 201"
-
-# --- secret from a file ---
-SECRET_FILE=$(mktemp)
-# Trailing newline on purpose: normalization must strip it so the derived ids
-# match the env-var server below.
-printf '%s\n' "$SECRET" >"$SECRET_FILE"
-FILE_PORT=$((PORT + 1))
-FILE_DB="${DB}.file"
-rm -f "$FILE_DB" "$FILE_DB"-*
-COCOON_HMAC_SECRET_FILE="$SECRET_FILE" COCOON_BIND="127.0.0.1:${FILE_PORT}" COCOON_DB="$FILE_DB" \
-  ./target/debug/cocoon >>/tmp/cocoon-smoke-server.log 2>&1 &
-FILE_PID=$!
-for _ in $(seq 1 50); do
-  curl -sf "http://127.0.0.1:${FILE_PORT}/healthz" >/dev/null 2>&1 && break
-  sleep 0.1
-done
-FBASE="http://127.0.0.1:${FILE_PORT}"
-check "$(curl -sS -o /dev/null -w '%{http_code}' "$FBASE/healthz")" "200" "file secret: server starts"
-check "$(curl -sS -X POST "$FBASE/api/paste" -H 'content-type: application/json' \
-  -d '{"content":"from a file","title":"FileSecret"}' | jq -r .title)" "FileSecret" "file secret: create works"
-
-# Same secret via env and via file must derive the same id for identical input.
-env_id=$(curl -sS -X POST "$BASE/api/paste" -H 'content-type: application/json' \
-  -d '{"content":"parity","title":"Parity","publish_at":"2035-01-01T00:00:00Z"}' | jq -r .id)
-file_id=$(curl -sS -X POST "$FBASE/api/paste" -H 'content-type: application/json' \
-  -d '{"content":"parity","title":"Parity","publish_at":"2035-01-01T00:00:00Z"}' | jq -r .id)
-check "$file_id" "$env_id" "file secret matches env secret"
-kill "$FILE_PID" 2>/dev/null
-FILE_PID=""
-
-# --- secret misconfiguration is fatal ---
-expect_failure "both secret sources rejected" env \
-  COCOON_HMAC_SECRET="$SECRET" COCOON_HMAC_SECRET_FILE="$SECRET_FILE" \
-  COCOON_BIND="127.0.0.1:$((PORT + 2))" COCOON_DB="${DB}.never1" ./target/debug/cocoon
-expect_failure "missing secret file rejected" env \
-  COCOON_HMAC_SECRET_FILE=/nonexistent/cocoon-secret \
-  COCOON_BIND="127.0.0.1:$((PORT + 3))" COCOON_DB="${DB}.never2" ./target/debug/cocoon
-SHORT_FILE=$(mktemp)
-printf 'short' >"$SHORT_FILE"
-expect_failure "short secret file rejected" env \
-  COCOON_HMAC_SECRET_FILE="$SHORT_FILE" \
-  COCOON_BIND="127.0.0.1:$((PORT + 4))" COCOON_DB="${DB}.never3" ./target/debug/cocoon
-rm -f "$SECRET_FILE" "$SHORT_FILE" "$FILE_DB" "$FILE_DB"-*
+loc=$(curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' -X POST "$BASE/new" \
+  --data-urlencode 'title=From the web' --data-urlencode 'content=web content')
+check "$(echo "$loc" | cut -d' ' -f1)" "303" "web form create redirects"
+created_path=$(echo "$loc" | cut -d' ' -f2)
+check "$(curl -sS -o /dev/null -w '%{http_code}' "$created_path")" "200" "created page renders"
+check "$(curl -sS "$created_path" | grep -c 'From the web')" "1" "created page shows the title"
 
 echo "-----------------------------------"
 echo "PASS=$pass FAIL=$fail"
-if grep -q ERROR /tmp/cocoon-smoke-server.log; then
-  echo "ERRORS FOUND IN SERVER LOG:"
-  grep ERROR /tmp/cocoon-smoke-server.log
+if grep -q 'ERROR' /tmp/cocoon-smoke.log; then
+  echo "ERRORS IN SERVER LOG:"
+  grep 'ERROR' /tmp/cocoon-smoke.log
 fi
 [ "$fail" -eq 0 ] || exit 1

@@ -1,5 +1,5 @@
 {
-  description = "Cocoon - a self-hostable time-locked pastebin";
+  description = "Cocoon - a self-hostable time-locked pastebin (Telegram bot + web)";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
@@ -37,16 +37,16 @@
         owner = "serephus";
         name = "cocoon";
 
-        description = "A self-hostable time-locked pastebin: submit text with a UTC timestamp and it stays private until then, then becomes public forever.";
+        description = "A self-hostable time-locked pastebin with a Telegram bot and web frontend: send content with a UTC timestamp and it stays private until then.";
         homepage = "https://github.com/serephus/cocoon";
         topics = [
           "rust"
+          "telegram"
+          "telegram-bot"
           "pastebin"
           "time-lock"
           "self-hosted"
-          "axum"
           "sqlite"
-          "hmac"
         ];
         visibility = "public";
 
@@ -136,7 +136,7 @@
         packages.default = naersk'.buildPackage {
           src = ./.;
           meta = {
-            description = "A self-hostable time-locked pastebin";
+            description = "A self-hostable time-locked pastebin (Telegram bot + web)";
             homepage = "https://github.com/serephus/cocoon";
             # GLWT is not in nixpkgs, so declare it inline.
             license = {

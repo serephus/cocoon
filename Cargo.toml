@@ -1,19 +1,19 @@
 [package]
 name = "cocoon"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.88"
-description = "A self-hostable time-locked pastebin"
+description = "A Telegram time-locked pastebin bot"
 homepage = "https://github.com/serephus/cocoon"
 repository = "https://github.com/serephus/cocoon"
 readme = "README.md"
 license-file = "LICENSE"
 keywords = [
+  "telegram",
   "pastebin",
   "time-lock",
   "self-hosted",
-  "axum",
-  "sqlite",
+  "bot",
 ]
 categories = [
   "web-programming::http-server",
@@ -23,20 +23,20 @@ categories = [
 axum = "0.8"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
 tower-http = { version = "0.7", features = ["trace", "request-id"] }
+teloxide = { version = "0.17", default-features = false, features = ["rustls"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 diesel = { version = "2.3", features = ["sqlite", "r2d2"] }
 diesel_migrations = { version = "2.3", features = ["sqlite"] }
 # Link a bundled SQLite so no system sqlite/pkg-config is required.
 libsqlite3-sys = { version = "0.38", features = ["bundled"] }
-hmac = "0.13"
 sha2 = "0.11"
-base64 = "0.23"
-# Already in the tree via askama; used to build links that preserve the search term.
-percent-encoding = "2"
 time = { version = "0.3", features = ["formatting", "parsing"] }
 askama = "0.16"
+percent-encoding = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 thiserror = "2"
 anyhow = "1"
+async-trait = "0.1"

@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+
+{% block title %}created — cocoon{% endblock %}
+
+{% block content %}
+    <div class="card">
+      <div class="id">{{ id }}</div>
+      {% if title.is_empty() %}
+      <div class="meta">no title</div>
+      {% else %}
+      <div class="meta">{{ title }}</div>
+      {% endif %}
+      <div class="meta">
+        {% if revealed %}public{% else %}reveals at {{ publish_at }} UTC{% endif %}
+      </div>
+
+      <p>
+        <a href="{{ read_url }}">raw link</a>
+        {% if !subscribe_url.is_empty() %}
+        &middot; <a href="{{ subscribe_url }}">notify me on Telegram</a>
+        {% endif %}
+      </p>
+
+      <p class="meta">Save this page or the id: anonymous pastes cannot be managed later.</p>
+      <p><a href="/">&larr; back to listing</a></p>
+    </div>
+{% endblock %}

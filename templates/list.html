@@ -10,17 +10,15 @@
       <input type="hidden" name="order" value="{{ order }}">
       <input type="hidden" name="per_page" value="{{ per_page }}">
       <button type="submit">search</button>
-      {% if self.has_query() %}<a class="clear" href="{{ self.clear_search_url() }}">clear</a>{% endif %}
+      {% if self.has_query() %}<a class="clear" href="/">clear</a>{% endif %}
     </form>
 
     <div class="filters">
       <span class="hint">show</span>
       <a class="toggle{% if show_revealed %} on{% endif %}"
-         href="{{ self.toggle_revealed_url() }}"
-         title="show or hide revealed pastes">revealed</a>
+         href="{{ self.toggle_revealed_url() }}">revealed</a>
       <a class="toggle{% if show_private %} on{% endif %}"
-         href="{{ self.toggle_private_url() }}"
-         title="show or hide private pastes">private</a>
+         href="{{ self.toggle_private_url() }}">private</a>
       <span class="spacer"></span>
       <span class="hint">click a column to sort</span>
     </div>
@@ -30,6 +28,7 @@
         <tr>
           <th>id</th>
           <th>title</th>
+          <th>by</th>
           <th>
             <a class="{% if sort == "publish_at" %}active{% endif %}"
                href="{{ self.publish_url() }}">publish at (UTC) <span class="arrow">{{ self.publish_arrow() }}</span></a>
@@ -39,6 +38,7 @@
                href="{{ self.created_url() }}">created (UTC) <span class="arrow">{{ self.created_arrow() }}</span></a>
           </th>
           <th>status</th>
+          <th></th>
         </tr>
       </thead>
       <tbody>
@@ -46,6 +46,7 @@
         <tr>
           <td class="id"><a href="/p/{{ p.id }}">{{ p.id }}</a></td>
           <td class="title">{{ p.title }}</td>
+          <td class="hint">{{ p.owner }}</td>
           <td>{{ p.publish_at }}</td>
           <td>{{ p.created_at }}</td>
           {% if p.revealed %}
@@ -53,9 +54,10 @@
           {% else %}
           <td class="scheduled">private &middot; in {{ p.reveal_in }}</td>
           {% endif %}
+          <td>{% if !p.subscribe_url.is_empty() %}<a href="{{ p.subscribe_url }}" title="notify me on Telegram">🔔</a>{% endif %}</td>
         </tr>
         {% else %}
-        <tr><td colspan="5" class="empty">no pastes match</td></tr>
+        <tr><td colspan="7" class="empty">no pastes match</td></tr>
         {% endfor %}
       </tbody>
     </table>
