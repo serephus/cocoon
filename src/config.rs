@@ -3,14 +3,19 @@ use std::net::SocketAddr;
 
 use anyhow::{Context, bail};
 
-/// Minimum length of the HMAC secret, in bytes.
-const MIN_SECRET_BYTES: usize = 16;
-
-/// Runtime configuration, sourced entirely from the environment.
+/// Runtime configuration, sourced from the environment.
+#[derive(Debug, Clone)]
 pub struct Config {
     pub bind: SocketAddr,
     pub db_path: String,
-    pub secret: Vec<u8>,
+    pub bot_token: String,
+    pub webhook_secret: String,
+    pub webhook_path: String,
+    pub public_url: Option<String>,
+    pub register_webhook: bool,
+    pub max_subscriptions: i64,
+    pub proxy: Option<String>,
+    pub api_url: Option<String>,
 }
 
 impl Config {
@@ -19,174 +24,127 @@ impl Config {
             .unwrap_or_else(|_| "127.0.0.1:3000".to_string())
             .parse()
             .context("COCOON_BIND must be a valid socket address, e.g. 127.0.0.1:3000")?;
-
         let db_path = env::var("COCOON_DB").unwrap_or_else(|_| "cocoon.db".to_string());
 
-        let secret = resolve_secret(
-            env::var("COCOON_HMAC_SECRET").ok(),
-            env::var("COCOON_HMAC_SECRET_FILE").ok(),
+        let bot_token = resolve_secret(
+            "COCOON_TELEGRAM_BOT_TOKEN",
+            "COCOON_TELEGRAM_BOT_TOKEN_FILE",
+            10,
+            usize::MAX,
+            None,
         )?;
+        let webhook_secret = resolve_secret(
+            "COCOON_TELEGRAM_WEBHOOK_SECRET",
+            "COCOON_TELEGRAM_WEBHOOK_SECRET_FILE",
+            16,
+            256,
+            Some("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-"),
+        )?;
+
+        let webhook_path = env::var("COCOON_TELEGRAM_WEBHOOK_PATH")
+            .unwrap_or_else(|_| "/telegram/webhook".to_string());
+        let public_url = env::var("COCOON_PUBLIC_URL").ok();
+        let register_webhook = parse_bool(
+            &env::var("COCOON_TELEGRAM_REGISTER_WEBHOOK").unwrap_or_else(|_| "true".to_string()),
+        )
+        .context("COCOON_TELEGRAM_REGISTER_WEBHOOK")?;
+        if register_webhook && public_url.is_none() {
+            bail!("COCOON_PUBLIC_URL is required when webhook registration is enabled");
+        }
+
+        let max_subscriptions = env::var("COCOON_MAX_SUBSCRIPTIONS")
+            .ok()
+            .map(|value| {
+                value
+                    .trim()
+                    .parse::<i64>()
+                    .with_context(|| format!("invalid COCOON_MAX_SUBSCRIPTIONS '{value}'"))
+            })
+            .transpose()?
+            .unwrap_or(100);
+        let proxy = env::var("COCOON_TELEGRAM_PROXY")
+            .ok()
+            .filter(|value| !value.is_empty());
+        let api_url = env::var("COCOON_TELEGRAM_API_URL")
+            .ok()
+            .filter(|value| !value.is_empty());
 
         Ok(Self {
             bind,
             db_path,
-            secret,
+            bot_token,
+            webhook_secret,
+            webhook_path,
+            public_url,
+            register_webhook,
+            max_subscriptions,
+            proxy,
+            api_url,
         })
     }
+
+    /// The full webhook URL, including the secret path segment.
+    pub fn webhook_url(&self) -> Option<String> {
+        let base = self.public_url.as_ref()?.trim_end_matches('/');
+        let path = self.webhook_path.trim_matches('/');
+        Some(format!("{base}/{path}/{}", self.webhook_secret))
+    }
 }
 
-/// Resolve the HMAC secret from either a literal value or a file.
-fn resolve_secret(env_value: Option<String>, file_path: Option<String>) -> anyhow::Result<Vec<u8>> {
-    resolve_secret_with(env_value, file_path, |path| {
-        warn_if_world_readable(path);
-        std::fs::read(path)
-    })
-}
-
-/// Testable core of [`resolve_secret`] with an injected file reader.
-///
-/// Exactly one source must be configured; setting both is an error so the
-/// choice is never ambiguous.
-fn resolve_secret_with(
-    env_value: Option<String>,
-    file_path: Option<String>,
-    read_file: impl Fn(&str) -> std::io::Result<Vec<u8>>,
-) -> anyhow::Result<Vec<u8>> {
-    let raw = match (env_value, file_path) {
-        (Some(_), Some(_)) => {
-            bail!("set only one of COCOON_HMAC_SECRET or COCOON_HMAC_SECRET_FILE")
-        }
-        (Some(value), None) => value.into_bytes(),
+fn resolve_secret(
+    env_var: &str,
+    file_var: &str,
+    min: usize,
+    max: usize,
+    charset: Option<&str>,
+) -> anyhow::Result<String> {
+    let raw = match (env::var(env_var).ok(), env::var(file_var).ok()) {
+        (Some(_), Some(_)) => bail!("set only one of {env_var} or {file_var}"),
+        (Some(value), None) => value,
         (None, Some(path)) => {
-            read_file(&path).with_context(|| format!("reading COCOON_HMAC_SECRET_FILE '{path}'"))?
+            let bytes =
+                std::fs::read(&path).with_context(|| format!("reading {file_var} '{path}'"))?;
+            String::from_utf8(bytes)
+                .with_context(|| format!("{file_var} '{path}' is not valid UTF-8"))?
         }
-        (None, None) => bail!("set COCOON_HMAC_SECRET or COCOON_HMAC_SECRET_FILE"),
+        (None, None) => bail!("set {env_var} or {file_var}"),
     };
 
-    let secret = normalize_secret(raw);
-    if secret.len() < MIN_SECRET_BYTES {
-        bail!("HMAC secret must be at least {MIN_SECRET_BYTES} bytes");
+    // Strip a single trailing newline, the common `echo`/editor artifact.
+    let value = raw.strip_suffix('\n').unwrap_or(&raw);
+    let value = value.strip_suffix('\r').unwrap_or(value);
+
+    if value.len() < min {
+        bail!("{env_var} must be at least {min} bytes");
     }
-    Ok(secret)
+    if value.len() > max {
+        bail!("{env_var} must be at most {max} bytes");
+    }
+    if let Some(allowed) = charset
+        && !value.chars().all(|c| allowed.contains(c))
+    {
+        bail!("{env_var} contains characters outside {allowed}");
+    }
+    Ok(value.to_string())
 }
 
-/// Drop a single trailing newline (`\n` or `\r\n`), the usual artifact of
-/// writing a secret with `echo` or a text editor. Every other byte, including
-/// spaces and tabs, is preserved.
-fn normalize_secret(mut raw: Vec<u8>) -> Vec<u8> {
-    if raw.last() == Some(&b'\n') {
-        raw.pop();
-        if raw.last() == Some(&b'\r') {
-            raw.pop();
-        }
-    }
-    raw
-}
-
-/// Warn (not fail) when a secret file is readable by group or others.
-#[cfg(unix)]
-fn warn_if_world_readable(path: &str) {
-    use std::os::unix::fs::PermissionsExt;
-
-    if let Ok(meta) = std::fs::metadata(path) {
-        let mode = meta.permissions().mode();
-        if mode & 0o077 != 0 {
-            tracing::warn!(
-                path,
-                mode = format!("{:o}", mode & 0o777),
-                "HMAC secret file is readable by group or others"
-            );
-        }
+fn parse_bool(value: &str) -> anyhow::Result<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Ok(true),
+        "0" | "false" | "no" | "off" => Ok(false),
+        other => bail!("invalid boolean '{other}'"),
     }
 }
-
-#[cfg(not(unix))]
-fn warn_if_world_readable(_path: &str) {}
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// A reader that ignores the path and returns fixed bytes.
-    fn reader(bytes: &'static [u8]) -> impl Fn(&str) -> std::io::Result<Vec<u8>> {
-        move |_| Ok(bytes.to_vec())
-    }
-
     #[test]
-    fn env_value_is_used() {
-        let secret =
-            resolve_secret_with(Some("0123456789abcdef".into()), None, reader(b"")).unwrap();
-        assert_eq!(secret, b"0123456789abcdef".to_vec());
-    }
-
-    #[test]
-    fn file_value_is_used() {
-        let secret = resolve_secret_with(
-            None,
-            Some("/run/secrets/cocoon".into()),
-            reader(b"fedcba9876543210"),
-        )
-        .unwrap();
-        assert_eq!(secret, b"fedcba9876543210".to_vec());
-    }
-
-    #[test]
-    fn both_sources_is_an_error() {
-        let err = resolve_secret_with(
-            Some("0123456789abcdef".into()),
-            Some("/run/secrets/cocoon".into()),
-            reader(b""),
-        )
-        .unwrap_err();
-        assert!(err.to_string().contains("only one"), "{err}");
-    }
-
-    #[test]
-    fn no_source_is_an_error() {
-        assert!(resolve_secret_with(None, None, reader(b"")).is_err());
-    }
-
-    #[test]
-    fn too_short_is_an_error() {
-        assert!(resolve_secret_with(Some("short".into()), None, reader(b"")).is_err());
-        assert!(
-            resolve_secret_with(None, Some("/x".into()), reader(b"short"))
-                .unwrap_err()
-                .to_string()
-                .contains("at least")
-        );
-    }
-
-    #[test]
-    fn reader_error_propagates() {
-        let read = |_: &str| {
-            Err(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "no such file",
-            ))
-        };
-        let err = resolve_secret_with(None, Some("/missing".into()), read).unwrap_err();
-        assert!(err.to_string().contains("/missing"), "{err}");
-    }
-
-    #[test]
-    fn strips_one_trailing_newline_only() {
-        assert_eq!(normalize_secret(b"secret\n".to_vec()), b"secret".to_vec());
-        assert_eq!(normalize_secret(b"secret\r\n".to_vec()), b"secret".to_vec());
-        assert_eq!(
-            normalize_secret(b"secret\n\n".to_vec()),
-            b"secret\n".to_vec()
-        );
-        // interior/other whitespace is preserved
-        assert_eq!(normalize_secret(b" a b\t".to_vec()), b" a b\t".to_vec());
-    }
-
-    #[test]
-    fn trailing_newline_does_not_change_the_secret() {
-        let plain =
-            resolve_secret_with(None, Some("/x".into()), reader(b"0123456789abcdef")).unwrap();
-        let newline =
-            resolve_secret_with(None, Some("/x".into()), reader(b"0123456789abcdef\n")).unwrap();
-        assert_eq!(plain, newline);
+    fn boolean_parsing() {
+        assert!(parse_bool("true").unwrap());
+        assert!(parse_bool("1").unwrap());
+        assert!(!parse_bool("off").unwrap());
+        assert!(parse_bool("maybe").is_err());
     }
 }

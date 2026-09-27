@@ -1,84 +1,74 @@
-//! Content-addressed, keyed paste identifiers.
+//! Short, per-user paste identifiers.
 //!
-//! `id = truncate_128(HMAC-SHA256(secret, domain || publish_at || len(title) || title || len(content) || content))`
-//!
-//! The keyed hash makes identifiers deterministic for the server while preventing
-//! third parties from guessing the hidden content offline.
+//! `id = base62(hash(user_id, content, title, publish_at) mod 62^8)`, giving an
+//! 8-character identifier. It is recomputed whenever a paste is edited, so an
+//! id is always a pure function of the paste's current fields.
 
-use base64::Engine;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use hmac::{Hmac, KeyInit, Mac};
-use sha2::Sha256;
+use sha2::{Digest, Sha256};
 
-type HmacSha256 = Hmac<Sha256>;
+use crate::user::User;
 
-/// Raw identifier length in bytes (128 bits).
-pub const ID_BYTES: usize = 16;
+const ALPHABET: &[u8; 62] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 
-const DOMAIN: &[u8] = b"cocoon:v1\0";
+/// Number of characters in an id.
+pub const ID_LEN: usize = 8;
 
-/// Compute the raw 128-bit identifier for `(publish_at, title, content)`.
-pub fn compute_id(secret: &[u8], publish_at: i64, title: &[u8], content: &[u8]) -> [u8; ID_BYTES] {
-    let mut mac = HmacSha256::new_from_slice(secret).expect("HMAC accepts keys of any length");
-    mac.update(DOMAIN);
-    mac.update(&publish_at.to_be_bytes());
-    mac.update(&(title.len() as u64).to_be_bytes());
-    mac.update(title);
-    mac.update(&(content.len() as u64).to_be_bytes());
-    mac.update(content);
-    let digest = mac.finalize().into_bytes();
+/// `62^ID_LEN`, the size of the id space.
+const SPACE: u64 = 62u64.pow(ID_LEN as u32);
 
-    let mut id = [0u8; ID_BYTES];
-    id.copy_from_slice(&digest[..ID_BYTES]);
-    id
+/// Compute the id for a paste's current fields.
+pub fn new_id(owner: User, content: &str, title: &str, publish_at: i64) -> String {
+    let key = owner.storage_key();
+    let mut hasher = Sha256::new();
+    hasher.update((key.len() as u64).to_be_bytes());
+    hasher.update(key.as_bytes());
+    hasher.update((content.len() as u64).to_be_bytes());
+    hasher.update(content.as_bytes());
+    hasher.update((title.len() as u64).to_be_bytes());
+    hasher.update(title.as_bytes());
+    hasher.update(publish_at.to_be_bytes());
+
+    let digest = hasher.finalize();
+    let mut bytes = [0u8; 8];
+    bytes.copy_from_slice(&digest[..8]);
+    encode(u64::from_be_bytes(bytes) % SPACE)
 }
 
-/// Encode a raw identifier for use in URLs (base64url, no padding).
-pub fn encode_id(id: &[u8]) -> String {
-    URL_SAFE_NO_PAD.encode(id)
-}
-
-/// Decode a URL identifier, returning `None` if it is malformed or the wrong length.
-pub fn decode_id(encoded: &str) -> Option<[u8; ID_BYTES]> {
-    let bytes = URL_SAFE_NO_PAD.decode(encoded).ok()?;
-    if bytes.len() != ID_BYTES {
-        return None;
+fn encode(mut value: u64) -> String {
+    let mut out = [0u8; ID_LEN];
+    for slot in out.iter_mut().rev() {
+        *slot = ALPHABET[(value % 62) as usize];
+        value /= 62;
     }
-    let mut id = [0u8; ID_BYTES];
-    id.copy_from_slice(&bytes);
-    Some(id)
+    String::from_utf8(out.to_vec()).expect("base62 alphabet is ASCII")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    const SECRET: &[u8] = b"0123456789abcdef";
+    #[test]
+    fn always_eight_url_safe_chars() {
+        let id = new_id(User::Telegram(1), "hello", "title", 1_893_456_000);
+        assert_eq!(id.len(), ID_LEN);
+        assert!(id.chars().all(|c| c.is_ascii_alphanumeric()));
+    }
 
     #[test]
     fn deterministic_and_field_sensitive() {
-        let a = compute_id(SECRET, 100, b"title", b"hello");
-        assert_eq!(a, compute_id(SECRET, 100, b"title", b"hello"));
-        assert_ne!(a, compute_id(SECRET, 101, b"title", b"hello"));
-        assert_ne!(a, compute_id(SECRET, 100, b"other", b"hello"));
-        assert_ne!(a, compute_id(SECRET, 100, b"title", b"hellp"));
+        let base = new_id(User::Telegram(1), "hello", "title", 100);
+        assert_eq!(base, new_id(User::Telegram(1), "hello", "title", 100));
+        assert_ne!(base, new_id(User::Telegram(2), "hello", "title", 100));
+        assert_ne!(base, new_id(User::Anonymous, "hello", "title", 100));
+        assert_ne!(base, new_id(User::Telegram(1), "hellp", "title", 100));
+        assert_ne!(base, new_id(User::Telegram(1), "hello", "other", 100));
+        assert_ne!(base, new_id(User::Telegram(1), "hello", "title", 101));
     }
 
     #[test]
-    fn no_field_boundary_ambiguity() {
-        // Length prefixes keep (title = "ab", content = "") distinct from
-        // (title = "a", content = "b").
-        assert_ne!(
-            compute_id(SECRET, 1, b"ab", b""),
-            compute_id(SECRET, 1, b"a", b"b")
-        );
-    }
-
-    #[test]
-    fn roundtrip_encoding() {
-        let id = compute_id(SECRET, 42, b"t", b"payload");
-        let encoded = encode_id(&id);
-        assert_eq!(decode_id(&encoded), Some(id));
-        assert_eq!(decode_id("not!valid!"), None);
+    fn editing_changes_the_id() {
+        let before = new_id(User::Telegram(1), "draft", "", 100);
+        let after = new_id(User::Telegram(1), "draft edited", "", 100);
+        assert_ne!(before, after);
     }
 }
