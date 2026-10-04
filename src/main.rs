@@ -1,30 +1,27 @@
 #![forbid(unsafe_code)]
 
+mod api;
+mod bot;
 mod clock;
 mod config;
-mod db;
 mod error;
 mod id;
-mod routes;
+mod listing;
+mod server;
+mod state;
+mod store;
+mod user;
+mod web;
 
 use std::sync::Arc;
 
 use anyhow::Context;
-use diesel::SqliteConnection;
-use diesel::r2d2::{ConnectionManager, Pool};
 use diesel_migrations::{EmbeddedMigrations, MigrationHarness, embed_migrations};
+use teloxide::prelude::Requester;
 use tokio::net::TcpListener;
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
-/// Embedded migrations, applied at startup.
 pub const MIGRATIONS: EmbeddedMigrations = embed_migrations!();
-
-/// Shared application state handed to every route.
-#[derive(Clone)]
-pub struct AppState {
-    pub pool: Pool<ConnectionManager<SqliteConnection>>,
-    pub secret: Arc<Vec<u8>>,
-}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -34,31 +31,55 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let config = config::Config::from_env()?;
-    let pool = db::build_pool(&config.db_path)?;
-
+    let pool = store::build_pool(&config.db_path)?;
     {
-        let mut conn = pool
-            .get()
-            .context("acquiring a database connection for migrations")?;
+        let mut conn = pool.get().context("database connection")?;
         conn.run_pending_migrations(MIGRATIONS)
             .map_err(|e| anyhow::anyhow!("running migrations: {e}"))?;
     }
 
-    let state = AppState {
-        pool,
-        secret: Arc::new(config.secret),
+    let bot = bot::messenger::build_bot(&config)?;
+    // Only ask Telegram who we are when we will actually need the handle
+    // (sharing links / registering the webhook). Keeps offline runs quiet.
+    let bot_username = if config.register_webhook || config.public_url.is_some() {
+        match bot.get_me().await {
+            Ok(me) => me.username.clone().unwrap_or_default(),
+            Err(e) => {
+                tracing::warn!("get_me failed: {e}");
+                String::new()
+            }
+        }
+    } else {
+        String::new()
     };
 
-    let app = routes::router(state);
-    let listener = TcpListener::bind(config.bind)
-        .await
-        .with_context(|| format!("binding {}", config.bind))?;
+    if config.register_webhook {
+        match bot::registration::register(&bot, &config).await {
+            Ok(()) => tracing::info!(
+                "webhook registered at {}",
+                config.webhook_url().unwrap_or_default()
+            ),
+            Err(e) => tracing::error!("failed to register webhook: {e}"),
+        }
+    }
 
-    tracing::info!("cocoon listening on http://{}", config.bind);
+    let messenger: Arc<dyn bot::Messenger> = Arc::new(bot::messenger::TelegramMessenger { bot });
+    let state = state::AppState {
+        pool,
+        config: Arc::new(config.clone()),
+        messenger,
+        bot_username: Arc::from(bot_username.as_str()),
+    };
+
+    tokio::spawn(bot::reveal::run(state.clone()));
+
+    let bind = config.bind;
+    let app = server::app(state);
+    let listener = TcpListener::bind(bind).await.context("binding listener")?;
+    tracing::info!("cocoon listening on http://{bind}");
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
-
     Ok(())
 }
 

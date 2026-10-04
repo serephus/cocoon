@@ -65,7 +65,7 @@
     th a.active { color: var(--fg); }
     .arrow { opacity: 0.75; }
     td.id { font-weight: bold; }
-    td.title { max-width: 24rem; overflow-wrap: anywhere; }
+    td.title { max-width: 20rem; overflow-wrap: anywhere; }
     .scheduled { color: var(--muted); }
     .empty { text-align: center; color: var(--muted); padding: 2rem; }
 
@@ -90,6 +90,9 @@
     form.new button:hover { filter: brightness(1.1); }
     .error-banner { margin: 0 0 1rem; padding: 0.5rem 0.75rem; border-radius: 6px;
                     border: 1px solid #f85149; color: #f85149; }
+    .card { border: 1px solid var(--border); border-radius: 8px; padding: 1.25rem; }
+    .card .id { font-size: 1.4rem; font-weight: bold; }
+    .card .meta { color: var(--muted); font-size: 0.9rem; margin-top: 0.25rem; }
 
     /* Error page */
     .error { text-align: center; padding: 3rem 0; }
@@ -101,7 +104,7 @@
   <header>
     <div>
       <h1><a href="/">cocoon</a></h1>
-      <p class="tagline">time-locked pastebin</p>
+      <p class="tagline">a time-locked pastebin</p>
     </div>
     <a class="button" href="/new">new paste</a>
   </header>

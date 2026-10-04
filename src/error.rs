@@ -3,47 +3,38 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
-/// Errors raised anywhere in the request path.
-///
-/// All variants are `Send + 'static` so they can cross the `spawn_blocking`
-/// boundary used for database work.
+/// Errors that can cross the async/blocking boundary.
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
     #[error("{0}")]
     BadRequest(String),
-    #[error("payload too large: content exceeds 65536 bytes")]
-    PayloadTooLarge,
+    #[error("content exceeds {max} characters")]
+    PayloadTooLarge { max: usize },
     #[error("not found")]
     NotFound,
     #[error("too early: paste is not public yet")]
     TooEarly,
-    #[error("conflict: this id already maps to different content")]
-    Conflict,
     #[error("database error: {0}")]
     Db(#[from] diesel::result::Error),
     #[error("connection pool error: {0}")]
     Pool(String),
-    #[error("template error: {0}")]
-    Template(String),
+    #[error("telegram error: {0}")]
+    Telegram(String),
+    #[error("a paste with identical content already exists: {0}")]
+    Duplicate(String),
     #[error("internal error: {0}")]
     Internal(String),
-}
-
-impl From<askama::Error> for AppError {
-    fn from(e: askama::Error) -> Self {
-        AppError::Template(e.to_string())
-    }
 }
 
 impl AppError {
     pub fn status(&self) -> StatusCode {
         match self {
             AppError::BadRequest(_) => StatusCode::BAD_REQUEST,
-            AppError::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
+            AppError::PayloadTooLarge { .. } => StatusCode::PAYLOAD_TOO_LARGE,
             AppError::NotFound => StatusCode::NOT_FOUND,
-            AppError::TooEarly => StatusCode::from_u16(425).expect("425 is a valid status"),
-            AppError::Conflict => StatusCode::CONFLICT,
-            AppError::Db(_) | AppError::Pool(_) | AppError::Template(_) | AppError::Internal(_) => {
+            AppError::TooEarly => StatusCode::from_u16(425).expect("425 is valid"),
+            AppError::Duplicate(_) => StatusCode::CONFLICT,
+            AppError::Db(_) | AppError::Pool(_) | AppError::Telegram(_) | AppError::Internal(_) => {
                 StatusCode::INTERNAL_SERVER_ERROR
             }
         }
@@ -56,7 +47,19 @@ impl AppError {
     }
 }
 
-/// Plain-text rendering, used by `/p/{id}`.
+impl From<teloxide::RequestError> for AppError {
+    fn from(e: teloxide::RequestError) -> Self {
+        AppError::Telegram(e.to_string())
+    }
+}
+
+impl From<reqwest::Error> for AppError {
+    fn from(e: reqwest::Error) -> Self {
+        AppError::Telegram(e.to_string())
+    }
+}
+
+/// Plain-text rendering, used by `/p/{id}` and the form routes.
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         self.log_if_internal();
