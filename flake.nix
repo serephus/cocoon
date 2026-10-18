@@ -159,7 +159,10 @@
           with pkgs;
           mkShell {
             name = "cocoon";
-            buildInputs = [ rust ];
+            buildInputs = [
+              rust
+              cargo-deny
+            ];
           };
       }
     );
