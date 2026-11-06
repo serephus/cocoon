@@ -347,8 +347,16 @@ async fn create(
     let title = form.title.trim().to_string();
 
     let content = form.content.clone();
+    let max_content_bytes = state.config.max_content_bytes;
     match store::run(&state.pool, move |conn| {
-        store::create_paste(conn, User::Anonymous, &content, &title, publish_at)
+        store::create_paste(
+            conn,
+            User::Anonymous,
+            &content,
+            &title,
+            publish_at,
+            max_content_bytes,
+        )
     })
     .await
     {
@@ -356,7 +364,7 @@ async fn create(
         // An identical anonymous paste already exists; point at it.
         Err(AppError::Duplicate(id)) => Ok(Redirect::to(&format!("/created/{id}")).into_response()),
         Err(AppError::PayloadTooLarge { max }) => render_new(
-            Some(&format!("Content is limited to {max} characters.")),
+            Some(&format!("Content is limited to {max} bytes.")),
             &form.title,
             &form.content,
             form.publish_at_raw(),

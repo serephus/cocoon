@@ -80,5 +80,11 @@ async fn notify(state: &AppState, user_id: i64, paste: &Paste) -> Result<(), App
             &format!("Paste {}{title} is now public.", paste.id),
         )
         .await?;
-    state.messenger.send(user_id, &paste.content).await
+    crate::bot::messenger::send_content(
+        state.messenger.as_ref(),
+        user_id,
+        &paste.id,
+        &paste.content,
+    )
+    .await
 }

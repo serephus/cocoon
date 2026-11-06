@@ -1,7 +1,9 @@
 use async_trait::async_trait;
 use teloxide::Bot;
 use teloxide::prelude::*;
-use teloxide::types::{CallbackQueryId, ChatId, InlineKeyboardButton, InlineKeyboardMarkup};
+use teloxide::types::{
+    CallbackQueryId, ChatId, InlineKeyboardButton, InlineKeyboardMarkup, InputFile,
+};
 
 use crate::config::Config;
 use crate::error::AppError;
@@ -40,6 +42,38 @@ pub trait Messenger: Send + Sync {
 
     /// Answer a callback query; `text` is an optional toast.
     async fn answer_callback(&self, callback_id: &str, text: Option<&str>) -> Result<(), AppError>;
+
+    /// Send a file as a Telegram document.
+    async fn send_document(
+        &self,
+        chat_id: i64,
+        filename: &str,
+        bytes: Vec<u8>,
+    ) -> Result<(), AppError>;
+}
+
+/// Telegram's per-message text limit.
+pub const TELEGRAM_TEXT_LIMIT: usize = 4096;
+
+/// Deliver paste content: inline text when it fits, otherwise a `.txt`
+/// document.
+pub async fn send_content(
+    messenger: &dyn Messenger,
+    chat_id: i64,
+    id: &str,
+    content: &str,
+) -> Result<(), AppError> {
+    if content.chars().count() <= TELEGRAM_TEXT_LIMIT {
+        messenger.send(chat_id, content).await
+    } else {
+        messenger
+            .send_document(
+                chat_id,
+                &format!("paste-{id}.txt"),
+                content.as_bytes().to_vec(),
+            )
+            .await
+    }
 }
 
 /// Build a teloxide bot, applying the optional explicit proxy.
@@ -105,6 +139,17 @@ impl Messenger for TelegramMessenger {
             Some(text) => request.text(text).await?,
             None => request.await?,
         };
+        Ok(())
+    }
+
+    async fn send_document(
+        &self,
+        chat_id: i64,
+        filename: &str,
+        bytes: Vec<u8>,
+    ) -> Result<(), AppError> {
+        let file = InputFile::memory(bytes).file_name(filename.to_string());
+        self.bot.send_document(ChatId(chat_id), file).await?;
         Ok(())
     }
 }

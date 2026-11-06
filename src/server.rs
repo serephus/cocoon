@@ -16,13 +16,19 @@ pub fn app(state: AppState) -> Router {
         "{}/{{secret}}",
         state.config.webhook_path.trim_end_matches('/')
     );
+    // Leave room for JSON/urlencoded escaping overhead on top of the content.
+    let body_limit = state
+        .config
+        .max_content_bytes
+        .saturating_mul(4)
+        .saturating_add(64 * 1024);
 
     Router::new()
         .merge(web::router())
         .merge(api::router())
         .route("/healthz", get(healthz))
         .route(&webhook_path, post(webhook::handle))
-        .layer(DefaultBodyLimit::max(1024 * 1024))
+        .layer(DefaultBodyLimit::max(body_limit))
         .layer(PropagateRequestIdLayer::x_request_id())
         .layer(
             TraceLayer::new_for_http()

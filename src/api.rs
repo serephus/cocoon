@@ -47,9 +47,17 @@ async fn create(
         None => now_unix(),
     };
     let content = req.content;
+    let max_content_bytes = state.config.max_content_bytes;
 
     let (id, status) = match store::run(&state.pool, move |conn| {
-        store::create_paste(conn, User::Anonymous, &content, &title, publish_at)
+        store::create_paste(
+            conn,
+            User::Anonymous,
+            &content,
+            &title,
+            publish_at,
+            max_content_bytes,
+        )
     })
     .await
     {
