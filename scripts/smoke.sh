@@ -29,6 +29,7 @@ rm -f "$DB" "$DB"-*
 COCOON_TELEGRAM_BOT_TOKEN="123456789:TESTTOKEN" \
   COCOON_TELEGRAM_WEBHOOK_SECRET="$SECRET" \
   COCOON_TELEGRAM_REGISTER_WEBHOOK=false \
+  COCOON_PUBLIC_URL="https://paste.example.com" \
   COCOON_BIND="127.0.0.1:${PORT}" \
   COCOON_DB="$DB" \
   ./target/debug/cocoon >/tmp/cocoon-smoke.log 2>&1 &
@@ -61,6 +62,7 @@ body=$(curl -sS -X POST "$BASE/api/paste" -H 'content-type: application/json' \
   -d '{"content":"hello world","title":"greeting","publish_at":"2020-01-01T00:00:00Z"}')
 id=$(echo "$body" | jq -r .id)
 check "$(echo "$body" | jq -r .owner)" "anonymous" "api create is anonymous"
+check "$(echo "$body" | jq -r .url)" "https://paste.example.com/p/$id" "api create returns an absolute url"
 check "${#id}" "8" "api id is 8 characters"
 check "$(curl -sS -o /dev/null -w '%{http_code}' "$BASE/p/$id")" "200" "read public paste"
 check "$(curl -sS "$BASE/p/$id")" "hello world" "read returns the content"
@@ -77,6 +79,7 @@ check "$(curl -sS -o /dev/null -w '%{http_code}' "$BASE/p/$future")" "425" "sche
 
 # --- JSON API: listing ---
 check "$(curl -sS "$BASE/api/pastes" | jq -r --arg id "$id" '[.pastes[].id] | index($id) != null')" "true" "api listing includes the paste"
+check "$(curl -sS "$BASE/api/pastes" | jq -r --arg id "$id" '.pastes[] | select(.id==$id) | .url')" "https://paste.example.com/p/$id" "api listing returns absolute urls"
 
 # --- Web pages ---
 check "$(curl -sS -o /dev/null -w '%{http_code}' "$BASE/")" "200" "web listing"
@@ -90,6 +93,8 @@ check "$(echo "$loc" | cut -d' ' -f1)" "303" "web form create redirects"
 created_path=$(echo "$loc" | cut -d' ' -f2)
 check "$(curl -sS -o /dev/null -w '%{http_code}' "$created_path")" "200" "created page renders"
 check "$(curl -sS "$created_path" | grep -c 'From the web')" "1" "created page shows the title"
+created_id=$(basename "$created_path")
+check "$(curl -sS "$created_path" | grep -c "https://paste.example.com/p/$created_id")" "1" "created page uses an absolute url"
 
 echo "-----------------------------------"
 echo "PASS=$pass FAIL=$fail"

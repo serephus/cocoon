@@ -78,7 +78,7 @@ async fn create(
     Ok((
         status,
         Json(CreateResponse {
-            url: format!("/p/{}", paste.id),
+            url: state.config.absolute_url(&format!("/p/{}", paste.id)),
             id: paste.id,
             title: paste.title,
             owner: paste.owner,
@@ -99,6 +99,9 @@ async fn list(
         page: opts.page,
         per_page: opts.per_page,
         has_next,
-        pastes: rows.iter().map(|meta| meta_json(meta, now)).collect(),
+        pastes: rows
+            .iter()
+            .map(|meta| meta_json(meta, now, &state.config.public_url))
+            .collect(),
     }))
 }

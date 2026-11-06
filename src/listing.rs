@@ -234,9 +234,9 @@ pub struct MetaJson {
     pub revealed: bool,
 }
 
-pub fn meta_json(meta: &PasteMeta, now: i64) -> MetaJson {
+pub fn meta_json(meta: &PasteMeta, now: i64, base_url: &str) -> MetaJson {
     MetaJson {
-        url: format!("/p/{}", meta.id),
+        url: format!("{base_url}/p/{}", meta.id),
         id: meta.id.clone(),
         title: meta.title.clone(),
         owner: meta.owner.clone(),

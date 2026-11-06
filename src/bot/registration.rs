@@ -7,9 +7,7 @@ use crate::error::AppError;
 
 /// Register the webhook and the command menu with Telegram.
 pub async fn register(bot: &Bot, config: &Config) -> Result<(), AppError> {
-    let url = config
-        .webhook_url()
-        .ok_or_else(|| AppError::Internal("no public URL configured".to_string()))?;
+    let url = config.webhook_url();
     let url = reqwest::Url::parse(&url)
         .map_err(|e| AppError::Internal(format!("invalid webhook URL: {e}")))?;
 

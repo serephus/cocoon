@@ -41,7 +41,7 @@ async fn main() -> anyhow::Result<()> {
     let bot = bot::messenger::build_bot(&config)?;
     // Only ask Telegram who we are when we will actually need the handle
     // (sharing links / registering the webhook). Keeps offline runs quiet.
-    let bot_username = if config.register_webhook || config.public_url.is_some() {
+    let bot_username = if config.register_webhook {
         match bot.get_me().await {
             Ok(me) => me.username.clone().unwrap_or_default(),
             Err(e) => {
@@ -55,10 +55,7 @@ async fn main() -> anyhow::Result<()> {
 
     if config.register_webhook {
         match bot::registration::register(&bot, &config).await {
-            Ok(()) => tracing::info!(
-                "webhook registered at {}",
-                config.webhook_url().unwrap_or_default()
-            ),
+            Ok(()) => tracing::info!("webhook registered at {}", config.webhook_url()),
             Err(e) => tracing::error!("failed to register webhook: {e}"),
         }
     }
