@@ -11,7 +11,7 @@ pub struct Config {
     pub bot_token: String,
     pub webhook_secret: String,
     pub webhook_path: String,
-    pub public_url: Option<String>,
+    pub public_url: String,
     pub register_webhook: bool,
     pub max_subscriptions: i64,
     pub max_content_bytes: usize,
@@ -44,14 +44,15 @@ impl Config {
 
         let webhook_path = env::var("COCOON_TELEGRAM_WEBHOOK_PATH")
             .unwrap_or_else(|_| "/telegram/webhook".to_string());
-        let public_url = env::var("COCOON_PUBLIC_URL").ok();
+        let public_url = env::var("COCOON_PUBLIC_URL")
+            .context("COCOON_PUBLIC_URL must be set (public base URL for links and the webhook)")?
+            .trim_end_matches('/')
+            .to_string();
+        reqwest::Url::parse(&public_url).context("COCOON_PUBLIC_URL must be a valid URL")?;
         let register_webhook = parse_bool(
             &env::var("COCOON_TELEGRAM_REGISTER_WEBHOOK").unwrap_or_else(|_| "true".to_string()),
         )
         .context("COCOON_TELEGRAM_REGISTER_WEBHOOK")?;
-        if register_webhook && public_url.is_none() {
-            bail!("COCOON_PUBLIC_URL is required when webhook registration is enabled");
-        }
 
         let max_subscriptions = env::var("COCOON_MAX_SUBSCRIPTIONS")
             .ok()
@@ -96,10 +97,18 @@ impl Config {
     }
 
     /// The full webhook URL, including the secret path segment.
-    pub fn webhook_url(&self) -> Option<String> {
-        let base = self.public_url.as_ref()?.trim_end_matches('/');
+    pub fn webhook_url(&self) -> String {
         let path = self.webhook_path.trim_matches('/');
-        Some(format!("{base}/{path}/{}", self.webhook_secret))
+        format!("{}/{path}/{}", self.public_url, self.webhook_secret)
+    }
+
+    /// Join a path onto the public base URL.
+    pub fn absolute_url(&self, path: &str) -> String {
+        if path.starts_with('/') {
+            format!("{}{path}", self.public_url)
+        } else {
+            format!("{}/{}", self.public_url, path)
+        }
     }
 }
 

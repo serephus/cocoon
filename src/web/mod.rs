@@ -395,7 +395,7 @@ async fn created(
         id: paste.id.clone(),
         title: paste.title.clone(),
         publish_at: format_rfc3339(paste.publish_at),
-        read_url: format!("/p/{}", paste.id),
+        read_url: state.config.absolute_url(&format!("/p/{}", paste.id)),
         subscribe_url: subscribe_url(&state, &paste.id).unwrap_or_default(),
         revealed: paste.publish_at <= now_unix(),
     };

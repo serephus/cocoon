@@ -498,11 +498,15 @@ async fn share(state: &AppState, chat_id: i64, user_id: i64, args: &str) -> Resu
     ) {
         return send(state, chat_id, "That paste is not revealed yet.").await;
     }
-    if state.bot_username.is_empty() {
-        return send(state, chat_id, "Sharing is unavailable right now.").await;
+    let web = state.config.absolute_url(&format!("/p/{}", paste.id));
+    let mut message = format!("Web: {web}");
+    if !state.bot_username.is_empty() {
+        message.push_str(&format!(
+            "\nTelegram: https://t.me/{}?start={}",
+            state.bot_username, paste.id
+        ));
     }
-    let link = format!("https://t.me/{}?start={}", state.bot_username, paste.id);
-    send(state, chat_id, &format!("Share this link:\n{link}")).await
+    send(state, chat_id, &message).await
 }
 
 async fn ask_delete(
@@ -879,7 +883,7 @@ mod tests {
             bot_token: "123456789:test".to_string(),
             webhook_secret: "0123456789abcdef0123456789abcdef".to_string(),
             webhook_path: "/telegram/webhook".to_string(),
-            public_url: None,
+            public_url: "https://paste.example.com".to_string(),
             register_webhook: false,
             max_subscriptions: 100,
             max_content_bytes: 4 * 1024 * 1024,

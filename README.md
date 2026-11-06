@@ -23,7 +23,7 @@ How the two frontends differ comes down to identity:
 | `/show <id>` | Show a paste you may read (your own before reveal, or any revealed one). |
 | `/edit <id>` | Edit one of your pastes before it is revealed (its id is recomputed). |
 | `/delete <id>` | Delete one of your pastes before it is revealed (with confirmation). |
-| `/share <id>` | Get a `t.me` deep link to the paste. |
+| `/share <id>` | Get the web URL and a `t.me` deep link for the paste. |
 | `/subscribe <id>` | Get a DM when the paste is revealed. |
 | `/unsubscribe <id>` | Stop notifications for a paste. |
 | `/subscriptions` | List your subscriptions. |
@@ -50,6 +50,10 @@ Listings accept `q` (title search), `revealed=0|1` and `private=0|1` (web
 toggles; the API uses `status=all|revealed|scheduled`), `sort`
 (`created_at`/`publish_at`), `order` (`asc`/`desc`), `page`, `per_page`, and
 `from`/`to` bounds.
+
+API responses (`POST /api/paste` and `GET /api/pastes`) return **absolute**
+`url` fields built from `COCOON_PUBLIC_URL`, so clients don't need to know the
+host.
 
 Content is limited to 4 MiB (`COCOON_MAX_CONTENT_BYTES`). Telegram text
 messages cap `/new` at 4096 characters, so larger pastes are created via the
@@ -82,7 +86,7 @@ visitors can subscribe through the bot.
 | -------- | ------- | -------- | ------- |
 | `COCOON_TELEGRAM_BOT_TOKEN` | — | yes | Bot token. |
 | `COCOON_TELEGRAM_WEBHOOK_SECRET` | — | yes | Webhook secret (16–256 of `[A-Za-z0-9_-]`), used as both the `secret_token` header and a URL path segment. |
-| `COCOON_PUBLIC_URL` | — | yes | Public HTTPS base URL. |
+| `COCOON_PUBLIC_URL` | — | yes | Public base URL; used for absolute links and the webhook. |
 | `COCOON_TELEGRAM_WEBHOOK_PATH` | `/telegram/webhook` | no | Webhook path prefix. |
 | `COCOON_TELEGRAM_REGISTER_WEBHOOK` | `true` | no | Register the webhook on startup. |
 | `COCOON_TELEGRAM_PROXY` | — | no | Explicit outbound proxy (ambient `HTTPS_PROXY` is ignored). |
