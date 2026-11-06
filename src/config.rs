@@ -14,6 +14,7 @@ pub struct Config {
     pub public_url: Option<String>,
     pub register_webhook: bool,
     pub max_subscriptions: i64,
+    pub max_content_bytes: usize,
     pub proxy: Option<String>,
     pub api_url: Option<String>,
 }
@@ -62,6 +63,16 @@ impl Config {
             })
             .transpose()?
             .unwrap_or(100);
+        let max_content_bytes = env::var("COCOON_MAX_CONTENT_BYTES")
+            .ok()
+            .map(|value| {
+                value
+                    .trim()
+                    .parse::<usize>()
+                    .with_context(|| format!("invalid COCOON_MAX_CONTENT_BYTES '{value}'"))
+            })
+            .transpose()?
+            .unwrap_or(4 * 1024 * 1024);
         let proxy = env::var("COCOON_TELEGRAM_PROXY")
             .ok()
             .filter(|value| !value.is_empty());
@@ -78,6 +89,7 @@ impl Config {
             public_url,
             register_webhook,
             max_subscriptions,
+            max_content_bytes,
             proxy,
             api_url,
         })

@@ -18,9 +18,6 @@ use self::schema::*;
 
 pub type DbPool = Pool<ConnectionManager<SqliteConnection>>;
 
-/// Maximum paste content size, matching Telegram's per-message limit.
-pub const MAX_CONTENT: usize = 4096;
-
 /// Per-connection pragmas. `journal_mode = WAL` is set once in [`build_pool`]
 /// (concurrent acquisitions would otherwise race for the lock).
 #[derive(Debug)]
@@ -114,9 +111,12 @@ pub fn create_paste(
     content: &str,
     title: &str,
     publish_at: i64,
+    max_content_bytes: usize,
 ) -> Result<String, AppError> {
-    if content.chars().count() > MAX_CONTENT {
-        return Err(AppError::PayloadTooLarge { max: MAX_CONTENT });
+    if content.len() > max_content_bytes {
+        return Err(AppError::PayloadTooLarge {
+            max: max_content_bytes,
+        });
     }
     let now = now_unix();
     let id = new_id(owner, content, title, publish_at);
@@ -153,9 +153,12 @@ pub fn update_paste(
     content: &str,
     title: &str,
     publish_at: i64,
+    max_content_bytes: usize,
 ) -> Result<String, AppError> {
-    if content.chars().count() > MAX_CONTENT {
-        return Err(AppError::PayloadTooLarge { max: MAX_CONTENT });
+    if content.len() > max_content_bytes {
+        return Err(AppError::PayloadTooLarge {
+            max: max_content_bytes,
+        });
     }
     let new_id = new_id(owner, content, title, publish_at);
     if new_id != old_id && id_taken(conn, &new_id)? {

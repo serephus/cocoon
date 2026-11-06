@@ -51,7 +51,9 @@ toggles; the API uses `status=all|revealed|scheduled`), `sort`
 (`created_at`/`publish_at`), `order` (`asc`/`desc`), `page`, `per_page`, and
 `from`/`to` bounds.
 
-Content is limited to 4096 characters.
+Content is limited to 4 MiB (`COCOON_MAX_CONTENT_BYTES`). Telegram text
+messages cap `/new` at 4096 characters, so larger pastes are created via the
+web or API; when showing a long paste, the bot sends it as a `.txt` document.
 
 ## Identity model
 
@@ -86,6 +88,7 @@ visitors can subscribe through the bot.
 | `COCOON_TELEGRAM_PROXY` | — | no | Explicit outbound proxy (ambient `HTTPS_PROXY` is ignored). |
 | `COCOON_TELEGRAM_API_URL` | Telegram | no | Override the Bot API base URL. |
 | `COCOON_MAX_SUBSCRIPTIONS` | `100` | no | Per-user subscription cap. |
+| `COCOON_MAX_CONTENT_BYTES` | `4194304` (4 MiB) | no | Maximum paste content size. |
 | `COCOON_BIND` | `127.0.0.1:3000` | no | Listen address. |
 | `COCOON_DB` | `cocoon.db` | no | SQLite database path. |
 

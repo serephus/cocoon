@@ -1,6 +1,6 @@
 use teloxide::types::{CallbackQuery, Update, UpdateKind};
 
-use crate::bot::messenger::Button;
+use crate::bot::messenger::{Button, send_content};
 use crate::clock::{format_rfc3339, now_unix, parse_publish_at};
 use crate::error::AppError;
 use crate::state::AppState;
@@ -10,8 +10,6 @@ use crate::store::{
 };
 use crate::user::{User, can_manage, can_read};
 
-/// Telegram's per-message limit.
-pub const MAX_CONTENT: usize = crate::store::MAX_CONTENT;
 pub const MAX_TITLE: usize = 256;
 const PAGE_SIZE: usize = 20;
 
@@ -141,11 +139,14 @@ async fn handle_wizard(
             } else {
                 text.to_string()
             };
-            if content.chars().count() > MAX_CONTENT {
+            if content.len() > state.config.max_content_bytes {
                 return send(
                     state,
                     chat_id,
-                    &format!("That is too long; the limit is {MAX_CONTENT} characters."),
+                    &format!(
+                        "That is too long; the limit is {} bytes.",
+                        state.config.max_content_bytes
+                    ),
                 )
                 .await;
             }
@@ -203,16 +204,32 @@ async fn handle_wizard(
             let owner = User::Telegram(user_id);
             let content = conversation.content.clone();
             let publish_at = conversation.publish_at.unwrap_or_else(now_unix);
+            let max_content_bytes = state.config.max_content_bytes;
             let result = if conversation.kind == "edit" {
                 let old_id = conversation.paste_id.clone();
                 store::run(&state.pool, move |conn| {
-                    store::update_paste(conn, &old_id, owner, &content, &title, publish_at)
+                    store::update_paste(
+                        conn,
+                        &old_id,
+                        owner,
+                        &content,
+                        &title,
+                        publish_at,
+                        max_content_bytes,
+                    )
                 })
                 .await
                 .map(|id| format!("Updated. The paste id is now {id}."))
             } else {
                 store::run(&state.pool, move |conn| {
-                    store::create_paste(conn, owner, &content, &title, publish_at)
+                    store::create_paste(
+                        conn,
+                        owner,
+                        &content,
+                        &title,
+                        publish_at,
+                        max_content_bytes,
+                    )
                 })
                 .await
                 .map(|id| {
@@ -677,7 +694,7 @@ async fn send_paste(state: &AppState, chat_id: i64, paste: &Paste) -> Result<(),
         format_rfc3339(paste.created_at)
     );
     state.messenger.send(chat_id, &meta).await?;
-    state.messenger.send(chat_id, &paste.content).await
+    send_content(state.messenger.as_ref(), chat_id, &paste.id, &paste.content).await
 }
 
 fn format_row(paste: &Paste, now: i64) -> String {
@@ -787,6 +804,7 @@ mod tests {
     struct FakeMessenger {
         sent: Mutex<Vec<(i64, String)>>,
         buttons: Mutex<Vec<(i64, String, ButtonRows)>>,
+        documents: Mutex<Vec<(i64, String, usize)>>,
     }
 
     #[async_trait]
@@ -824,6 +842,19 @@ mod tests {
         ) -> Result<(), AppError> {
             Ok(())
         }
+
+        async fn send_document(
+            &self,
+            chat_id: i64,
+            filename: &str,
+            bytes: Vec<u8>,
+        ) -> Result<(), AppError> {
+            self.documents
+                .lock()
+                .unwrap()
+                .push((chat_id, filename.to_string(), bytes.len()));
+            Ok(())
+        }
     }
 
     fn test_state() -> (AppState, Arc<FakeMessenger>) {
@@ -851,6 +882,7 @@ mod tests {
             public_url: None,
             register_webhook: false,
             max_subscriptions: 100,
+            max_content_bytes: 4 * 1024 * 1024,
             proxy: None,
             api_url: None,
         };
@@ -997,5 +1029,22 @@ mod tests {
         let sent = fake.sent.lock().unwrap();
         assert!(sent.iter().any(|(_, t)| t.contains("one")));
         assert!(sent.iter().any(|(_, t)| t.contains("two")));
+    }
+
+    #[tokio::test]
+    async fn long_content_is_sent_as_a_document() {
+        let (state, fake) = test_state();
+        let long = "x".repeat(5000);
+        send_update(&state, 1, 777, "/new").await;
+        send_update(&state, 2, 777, &long).await;
+        send_update(&state, 3, 777, "/skip").await;
+        send_update(&state, 4, 777, "long").await;
+        let id = user_pastes(&state, 777).await[0].id.clone();
+
+        send_update(&state, 5, 777, &format!("/show {id}")).await;
+        let documents = fake.documents.lock().unwrap();
+        assert_eq!(documents.len(), 1);
+        assert_eq!(documents[0].1, format!("paste-{id}.txt"));
+        assert_eq!(documents[0].2, 5000);
     }
 }
