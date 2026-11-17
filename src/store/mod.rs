@@ -74,13 +74,15 @@ pub fn get_paste(conn: &mut SqliteConnection, id: &str) -> QueryResult<Option<Pa
     pastes::table.find(id).first(conn).optional()
 }
 
-/// Every paste, newest first.
+/// Every public paste, newest first. Private pastes are only visible to their
+/// owner through [`list_owner_pastes`].
 pub fn list_pastes(
     conn: &mut SqliteConnection,
     limit: i64,
     offset: i64,
 ) -> QueryResult<Vec<Paste>> {
     pastes::table
+        .filter(pastes::private.eq(false))
         .order((pastes::created_at.desc(), pastes::id.asc()))
         .limit(limit)
         .offset(offset)
@@ -111,6 +113,7 @@ pub fn create_paste(
     content: &str,
     title: &str,
     publish_at: i64,
+    private: bool,
     max_content_bytes: usize,
 ) -> Result<String, AppError> {
     if content.len() > max_content_bytes {
@@ -119,7 +122,7 @@ pub fn create_paste(
         });
     }
     let now = now_unix();
-    let id = new_id(owner, content, title, publish_at);
+    let id = new_id(owner, content, title, publish_at, private);
     if id_taken(conn, &id)? {
         return Err(AppError::Duplicate(id));
     }
@@ -135,6 +138,7 @@ pub fn create_paste(
                 created_at: now,
                 updated_at: now,
                 notified: false,
+                private,
             })
             .execute(conn)?;
         if let Some(user_id) = owner.telegram_id() {
@@ -146,6 +150,7 @@ pub fn create_paste(
 }
 
 /// Update an existing paste, recomputing its id. Returns the new id.
+#[allow(clippy::too_many_arguments)]
 pub fn update_paste(
     conn: &mut SqliteConnection,
     old_id: &str,
@@ -153,6 +158,7 @@ pub fn update_paste(
     content: &str,
     title: &str,
     publish_at: i64,
+    private: bool,
     max_content_bytes: usize,
 ) -> Result<String, AppError> {
     if content.len() > max_content_bytes {
@@ -160,7 +166,7 @@ pub fn update_paste(
             max: max_content_bytes,
         });
     }
-    let new_id = new_id(owner, content, title, publish_at);
+    let new_id = new_id(owner, content, title, publish_at, private);
     if new_id != old_id && id_taken(conn, &new_id)? {
         return Err(AppError::Duplicate(new_id));
     }
@@ -170,6 +176,7 @@ pub fn update_paste(
             pastes::content.eq(content),
             pastes::title.eq(title),
             pastes::publish_at.eq(publish_at),
+            pastes::private.eq(private),
             pastes::updated_at.eq(now_unix()),
             pastes::notified.eq(false),
         ))

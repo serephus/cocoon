@@ -10,6 +10,7 @@ diesel::table! {
         created_at -> BigInt,
         updated_at -> BigInt,
         notified -> Bool,
+        private -> Bool,
     }
 }
 

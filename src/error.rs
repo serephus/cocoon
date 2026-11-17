@@ -12,8 +12,6 @@ pub enum AppError {
     PayloadTooLarge { max: usize },
     #[error("not found")]
     NotFound,
-    #[error("too early: paste is not public yet")]
-    TooEarly,
     #[error("database error: {0}")]
     Db(#[from] diesel::result::Error),
     #[error("connection pool error: {0}")]
@@ -32,7 +30,6 @@ impl AppError {
             AppError::BadRequest(_) => StatusCode::BAD_REQUEST,
             AppError::PayloadTooLarge { .. } => StatusCode::PAYLOAD_TOO_LARGE,
             AppError::NotFound => StatusCode::NOT_FOUND,
-            AppError::TooEarly => StatusCode::from_u16(425).expect("425 is valid"),
             AppError::Duplicate(_) => StatusCode::CONFLICT,
             AppError::Db(_) | AppError::Pool(_) | AppError::Telegram(_) | AppError::Internal(_) => {
                 StatusCode::INTERNAL_SERVER_ERROR

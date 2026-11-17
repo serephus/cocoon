@@ -18,6 +18,7 @@ pub struct Paste {
     /// Maintained for the reveal query; not read from the loaded row.
     #[allow(dead_code)]
     pub notified: bool,
+    pub private: bool,
 }
 
 #[derive(Debug, Insertable)]
@@ -31,6 +32,7 @@ pub struct NewPaste<'a> {
     pub created_at: i64,
     pub updated_at: i64,
     pub notified: bool,
+    pub private: bool,
 }
 
 #[derive(Debug, Clone, Queryable)]

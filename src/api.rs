@@ -26,6 +26,8 @@ pub struct CreateRequest {
     pub title: Option<String>,
     #[serde(default)]
     pub publish_at: Option<String>,
+    #[serde(default)]
+    pub private: Option<bool>,
 }
 
 /// Fields accepted from `multipart/form-data` and
@@ -39,6 +41,8 @@ struct CreateForm {
     title: Option<String>,
     #[serde(default)]
     publish_at: Option<String>,
+    #[serde(default)]
+    private: Option<String>,
 }
 
 impl CreateForm {
@@ -47,8 +51,16 @@ impl CreateForm {
             content: self.c.or(fallback_content).unwrap_or_default(),
             title: self.title,
             publish_at: self.publish_at,
+            private: self.private.as_deref().map(parse_flag),
         }
     }
+}
+
+fn parse_flag(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
 }
 
 /// Optional metadata that can come from the query string, so raw text bodies
@@ -57,12 +69,14 @@ impl CreateForm {
 struct CreateQuery {
     title: Option<String>,
     publish_at: Option<String>,
+    private: Option<String>,
 }
 
 struct CreateInput {
     content: String,
     title: Option<String>,
     publish_at: Option<String>,
+    private: Option<bool>,
 }
 
 async fn parse_create(
@@ -90,6 +104,7 @@ async fn parse_create(
                 content: req.content,
                 title: req.title,
                 publish_at: req.publish_at,
+                private: req.private,
             }
         }
         "multipart/form-data" => {
@@ -111,6 +126,7 @@ async fn parse_create(
                     "c" | "content" => form.c = Some(text),
                     "title" => form.title = Some(text),
                     "publish_at" => form.publish_at = Some(text),
+                    "private" => form.private = Some(text),
                     _ => {}
                 }
             }
@@ -130,6 +146,7 @@ async fn parse_create(
                     content: raw,
                     title: None,
                     publish_at: None,
+                    private: None,
                 },
             }
         }
@@ -145,6 +162,7 @@ async fn parse_create(
                 content,
                 title: None,
                 publish_at: None,
+                private: None,
             }
         }
     };
@@ -154,6 +172,9 @@ async fn parse_create(
     }
     if input.publish_at.is_none() {
         input.publish_at = query.publish_at;
+    }
+    if input.private.is_none() {
+        input.private = query.private.as_deref().map(parse_flag);
     }
     Ok(input)
 }
@@ -166,6 +187,7 @@ pub struct CreateResponse {
     pub owner: String,
     pub publish_at: String,
     pub created_at: String,
+    pub private: bool,
 }
 
 async fn create(
@@ -182,6 +204,7 @@ async fn create(
         _ => now_unix(),
     };
     let content = req.content;
+    let private = req.private.unwrap_or(false);
     let max_content_bytes = state.config.max_content_bytes;
 
     let (id, status) = match store::run(&state.pool, move |conn| {
@@ -191,6 +214,7 @@ async fn create(
             &content,
             &title,
             publish_at,
+            private,
             max_content_bytes,
         )
     })
@@ -219,6 +243,7 @@ async fn create(
             owner: paste.owner,
             publish_at: format_rfc3339(paste.publish_at),
             created_at: format_rfc3339(paste.created_at),
+            private: paste.private,
         }),
     ))
 }

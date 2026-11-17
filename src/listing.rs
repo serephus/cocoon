@@ -163,6 +163,7 @@ pub async fn fetch_list(
 ) -> Result<(Vec<PasteMeta>, bool), AppError> {
     store::run(pool, move |conn| {
         let mut q = pastes::table
+            .filter(pastes::private.eq(false))
             .select((
                 pastes::id,
                 pastes::owner,

@@ -200,9 +200,45 @@ async fn handle_wizard(
             if let Err(message) = validate_title(&title) {
                 return send(state, chat_id, &message).await;
             }
+            save_step(
+                state,
+                user_id,
+                &conversation,
+                "private",
+                &conversation.content.clone(),
+                conversation.publish_at,
+                Some(&title),
+            )
+            .await?;
+            send(
+                state,
+                chat_id,
+                "Should this paste be private (hidden from public listings)? Reply yes or no, or /skip to keep it public.",
+            )
+            .await
+        }
+        "private" => {
+            let private = match text.trim().to_ascii_lowercase().as_str() {
+                "/skip" => {
+                    if conversation.kind == "edit" {
+                        match fetch(state, &conversation.paste_id).await? {
+                            Some(paste) => paste.private,
+                            None => false,
+                        }
+                    } else {
+                        false
+                    }
+                }
+                "yes" | "y" | "true" | "1" | "private" => true,
+                "no" | "n" | "false" | "0" | "public" => false,
+                _ => {
+                    return send(state, chat_id, "Reply yes, no, or /skip.").await;
+                }
+            };
 
             let owner = User::Telegram(user_id);
             let content = conversation.content.clone();
+            let title = conversation.title.clone();
             let publish_at = conversation.publish_at.unwrap_or_else(now_unix);
             let max_content_bytes = state.config.max_content_bytes;
             let result = if conversation.kind == "edit" {
@@ -215,6 +251,7 @@ async fn handle_wizard(
                         &content,
                         &title,
                         publish_at,
+                        private,
                         max_content_bytes,
                     )
                 })
@@ -228,6 +265,7 @@ async fn handle_wizard(
                         &content,
                         &title,
                         publish_at,
+                        private,
                         max_content_bytes,
                     )
                 })
@@ -925,6 +963,7 @@ mod tests {
         send_update(state, 2, user_id, content).await;
         send_update(state, 3, user_id, when).await;
         send_update(state, 4, user_id, title).await;
+        send_update(state, 5, user_id, "/skip").await;
         user_pastes(state, user_id)
             .await
             .into_iter()
@@ -952,6 +991,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn private_paste_is_hidden_from_the_public_list() {
+        let (state, fake) = test_state();
+        send_update(&state, 1, 777, "/new").await;
+        send_update(&state, 2, 777, "hidden").await;
+        send_update(&state, 3, 777, "/skip").await;
+        send_update(&state, 4, 777, "secret title").await;
+        send_update(&state, 5, 777, "yes").await;
+
+        let pastes = user_pastes(&state, 777).await;
+        assert_eq!(pastes.len(), 1);
+        assert!(pastes[0].private);
+
+        send_update(&state, 6, 888, "/list").await;
+        assert!(
+            !fake
+                .sent
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(_, text)| text.contains("secret title"))
+        );
+    }
+
+    #[tokio::test]
     async fn creating_auto_subscribes_the_owner() {
         let (state, _) = test_state();
         let id = create(&state, 777, "hello", "2030-01-01 00:00", "t").await;
@@ -973,6 +1036,7 @@ mod tests {
         send_update(&state, 6, 777, "draft edited").await;
         send_update(&state, 7, 777, "/skip").await;
         send_update(&state, 8, 777, "/skip").await;
+        send_update(&state, 9, 777, "/skip").await;
 
         let pastes = user_pastes(&state, 777).await;
         assert_eq!(pastes.len(), 1);
@@ -1043,9 +1107,10 @@ mod tests {
         send_update(&state, 2, 777, &long).await;
         send_update(&state, 3, 777, "/skip").await;
         send_update(&state, 4, 777, "long").await;
+        send_update(&state, 5, 777, "/skip").await;
         let id = user_pastes(&state, 777).await[0].id.clone();
 
-        send_update(&state, 5, 777, &format!("/show {id}")).await;
+        send_update(&state, 6, 777, &format!("/show {id}")).await;
         let documents = fake.documents.lock().unwrap();
         assert_eq!(documents.len(), 1);
         assert_eq!(documents[0].1, format!("paste-{id}.txt"));
