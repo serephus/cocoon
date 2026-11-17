@@ -5,7 +5,7 @@
       <input type="search" name="q" value="{{ query }}" placeholder="search titles…"
              aria-label="search titles">
       <input type="hidden" name="revealed" value="{{ self.revealed_flag() }}">
-      <input type="hidden" name="private" value="{{ self.private_flag() }}">
+      <input type="hidden" name="scheduled" value="{{ self.scheduled_flag() }}">
       <input type="hidden" name="sort" value="{{ sort }}">
       <input type="hidden" name="order" value="{{ order }}">
       <input type="hidden" name="per_page" value="{{ per_page }}">
@@ -17,8 +17,8 @@
       <span class="hint">show</span>
       <a class="toggle{% if show_revealed %} on{% endif %}"
          href="{{ self.toggle_revealed_url() }}">revealed</a>
-      <a class="toggle{% if show_private %} on{% endif %}"
-         href="{{ self.toggle_private_url() }}">private</a>
+      <a class="toggle{% if show_scheduled %} on{% endif %}"
+         href="{{ self.toggle_scheduled_url() }}">scheduled</a>
       <span class="spacer"></span>
       <span class="hint">click a column to sort</span>
     </div>
@@ -52,7 +52,7 @@
           {% if p.revealed %}
           <td>revealed</td>
           {% else %}
-          <td class="scheduled">private &middot; in {{ p.reveal_in }}</td>
+          <td class="scheduled">scheduled &middot; in {{ p.reveal_in }}</td>
           {% endif %}
           <td>{% if !p.subscribe_url.is_empty() %}<a href="{{ p.subscribe_url }}" title="notify me on Telegram">🔔</a>{% endif %}</td>
         </tr>

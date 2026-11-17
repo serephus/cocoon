@@ -1,8 +1,9 @@
 # cocoon
 
 A **time-locked pastebin** with two frontends: a Telegram bot and a web page.
-Submit content with an optional publish time; it stays private until then, after
-which it is public.
+Submit content with an optional publish time; it stays unrevealed until then,
+after which it is public. A paste can also be marked **private**: it is readable
+by id but never appears in public listings.
 
 How the two frontends differ comes down to identity:
 
@@ -17,7 +18,7 @@ How the two frontends differ comes down to identity:
 
 | Command | Description |
 | --- | --- |
-| `/new` | Create a paste: content → publish time (`/skip` = now) → title (`/skip` = none). |
+| `/new` | Create a paste: content → publish time (`/skip` = now) → title (`/skip` = none) → private (`/skip` = public). |
 | `/list [page]` | List every paste (inline prev/next buttons). |
 | `/mine` | List your pastes. |
 | `/show <id>` | Show a paste you may read (your own before reveal, or any revealed one). |
@@ -39,17 +40,18 @@ just the normal subscriber notification.
 | Method | Path | Description |
 | --- | --- | --- |
 | `GET` | `/` | HTML listing of every paste (metadata only). |
-| `GET` | `/p/{id}` | Raw `text/plain` content once revealed; `425` before; `404` if unknown. |
-| `GET`/`POST` | `/new` | Creation form for anonymous pastes. |
+| `GET` | `/p/{id}` | Raw `text/plain` content once revealed; `425` with the reveal time before; `404` if unknown. |
+| `GET`/`POST` | `/new` | Creation form for anonymous pastes (includes a private checkbox). |
 | `GET` | `/created/{id}` | Confirmation with the id, raw link, and a Telegram subscribe link. |
 | `POST` | `/api/paste` | Create an anonymous paste (JSON, form, multipart, or raw text; idempotent). |
 | `GET` | `/api/pastes` | JSON listing. |
 | `GET` | `/healthz` | Liveness probe. |
 
-Listings accept `q` (title search), `revealed=0|1` and `private=0|1` (web
+Listings accept `q` (title search), `revealed=0|1` and `scheduled=0|1` (web
 toggles; the API uses `status=all|revealed|scheduled`), `sort`
 (`created_at`/`publish_at`), `order` (`asc`/`desc`), `page`, `per_page`, and
-`from`/`to` bounds.
+`from`/`to` bounds. Pastes marked private are always excluded from public
+listings.
 
 API responses (`POST /api/paste` and `GET /api/pastes`) return **absolute**
 `url` fields built from `COCOON_PUBLIC_URL`, so clients don't need to know the
@@ -59,13 +61,14 @@ host.
 
 | `Content-Type` | Content |
 | --- | --- |
-| `application/json` | `{"content": "...", "title": "...", "publish_at": "..."}` |
+| `application/json` | `{"content": "...", "title": "...", "publish_at": "...", "private": false}` |
 | `text/plain` (or missing/other) | The raw request body. |
 | `application/x-www-form-urlencoded` | `c=...` (alias `content`), `title`, `publish_at`. |
 | `multipart/form-data` | The same fields, so `cmd \| curl -F "c=@-" https://.../api/paste` works. |
 
-With a raw body, `title` and `publish_at` can be set through query parameters,
-e.g. `.../api/paste?title=note&publish_at=2030-01-01`.
+With a raw body, `title`, `publish_at`, and `private` can be set through query
+parameters, e.g. `.../api/paste?title=note&publish_at=2030-01-01&private=1`.
+Form and multipart bodies accept the same fields.
 
 Content is limited to 4 MiB (`COCOON_MAX_CONTENT_BYTES`). Telegram text
 messages cap `/new` at 4096 characters, so larger pastes are created via the

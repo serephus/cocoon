@@ -2,7 +2,7 @@ use askama::Template;
 use axum::Form;
 use axum::Router;
 use axum::extract::{Path, Query, State};
-use axum::http::header;
+use axum::http::{StatusCode, header};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::get;
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
@@ -32,7 +32,7 @@ pub struct WebListParams {
     pub page: Option<i64>,
     pub per_page: Option<i64>,
     pub revealed: Option<String>,
-    pub private: Option<String>,
+    pub scheduled: Option<String>,
     pub sort: Option<String>,
     pub order: Option<String>,
     pub from: Option<String>,
@@ -43,8 +43,8 @@ pub struct WebListParams {
 impl WebListParams {
     fn normalize(&self) -> Result<ListOptions, AppError> {
         let show_revealed = self.revealed.as_deref() != Some("0");
-        let show_private = self.private.as_deref() != Some("0");
-        let status = match (show_revealed, show_private) {
+        let show_scheduled = self.scheduled.as_deref() != Some("0");
+        let status = match (show_revealed, show_scheduled) {
             (true, true) => "all",
             (true, false) => "revealed",
             (false, true) => "scheduled",
@@ -110,7 +110,7 @@ async fn list(
         page: opts.page,
         per_page: opts.per_page,
         show_revealed: opts.status.revealed,
-        show_private: opts.status.scheduled,
+        show_scheduled: opts.status.scheduled,
         sort: opts.sort.as_str().to_string(),
         order: opts.order.as_str().to_string(),
         query: opts.query.clone().unwrap_or_default(),
@@ -154,7 +154,7 @@ struct ListTemplate {
     page: i64,
     per_page: i64,
     show_revealed: bool,
-    show_private: bool,
+    show_scheduled: bool,
     sort: String,
     order: String,
     query: String,
@@ -178,14 +178,14 @@ impl ListTemplate {
         &self,
         page: i64,
         revealed: bool,
-        private: bool,
+        scheduled: bool,
         sort: &str,
         order: &str,
         query: &str,
     ) -> String {
         let mut url = format!(
-            "/?page={page}&per_page={}&revealed={}&private={}&sort={sort}&order={order}",
-            self.per_page, revealed as u8, private as u8
+            "/?page={page}&per_page={}&revealed={}&scheduled={}&sort={sort}&order={order}",
+            self.per_page, revealed as u8, scheduled as u8
         );
         if !query.is_empty() {
             url.push_str("&q=");
@@ -194,25 +194,25 @@ impl ListTemplate {
         url
     }
 
-    fn url(&self, page: i64, revealed: bool, private: bool, sort: &str, order: &str) -> String {
-        self.build_url(page, revealed, private, sort, order, &self.query)
+    fn url(&self, page: i64, revealed: bool, scheduled: bool, sort: &str, order: &str) -> String {
+        self.build_url(page, revealed, scheduled, sort, order, &self.query)
     }
 
     fn toggle_revealed_url(&self) -> String {
         self.url(
             1,
             !self.show_revealed,
-            self.show_private,
+            self.show_scheduled,
             &self.sort,
             &self.order,
         )
     }
 
-    fn toggle_private_url(&self) -> String {
+    fn toggle_scheduled_url(&self) -> String {
         self.url(
             1,
             self.show_revealed,
-            !self.show_private,
+            !self.show_scheduled,
             &self.sort,
             &self.order,
         )
@@ -224,7 +224,7 @@ impl ListTemplate {
         } else {
             (key, "desc")
         };
-        self.url(1, self.show_revealed, self.show_private, sort, order)
+        self.url(1, self.show_revealed, self.show_scheduled, sort, order)
     }
 
     fn arrow_for(&self, key: &str) -> &'static str {
@@ -257,7 +257,7 @@ impl ListTemplate {
         self.url(
             self.page - 1,
             self.show_revealed,
-            self.show_private,
+            self.show_scheduled,
             &self.sort,
             &self.order,
         )
@@ -267,7 +267,7 @@ impl ListTemplate {
         self.url(
             self.page + 1,
             self.show_revealed,
-            self.show_private,
+            self.show_scheduled,
             &self.sort,
             &self.order,
         )
@@ -277,8 +277,8 @@ impl ListTemplate {
         self.show_revealed as u8
     }
 
-    fn private_flag(&self) -> u8 {
-        self.show_private as u8
+    fn scheduled_flag(&self) -> u8 {
+        self.show_scheduled as u8
     }
 
     fn has_query(&self) -> bool {
@@ -296,7 +296,19 @@ async fn read(State(state): State<AppState>, Path(id): Path<String>) -> Result<R
         return Err(AppError::NotFound);
     };
     if !can_read(User::Anonymous, &paste.owner, paste.publish_at, now_unix()) {
-        return Err(AppError::TooEarly);
+        let reveal_at = format_rfc3339(paste.publish_at);
+        return Ok((
+            StatusCode::TOO_EARLY,
+            [
+                (header::CONTENT_TYPE, "text/plain; charset=utf-8"),
+                (
+                    header::HeaderName::from_static("x-reveal-at"),
+                    reveal_at.as_str(),
+                ),
+            ],
+            format!("this paste is not revealed yet; it reveals at {reveal_at}\n"),
+        )
+            .into_response());
     }
     Ok((
         [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
@@ -317,6 +329,8 @@ pub struct NewPasteForm {
     pub content: String,
     #[serde(default)]
     pub publish_at: Option<String>,
+    #[serde(default)]
+    pub private: bool,
 }
 
 impl NewPasteForm {
@@ -326,7 +340,7 @@ impl NewPasteForm {
 }
 
 async fn new_form() -> Result<Response, PageError> {
-    render_new(None, "", "", "")
+    render_new(None, "", "", "", false)
 }
 
 async fn create(
@@ -340,13 +354,20 @@ async fn create(
         match parse_publish_at(raw_time) {
             Ok(value) => value,
             Err(message) => {
-                return render_new(Some(&message), &form.title, &form.content, raw_time);
+                return render_new(
+                    Some(&message),
+                    &form.title,
+                    &form.content,
+                    raw_time,
+                    form.private,
+                );
             }
         }
     };
     let title = form.title.trim().to_string();
 
     let content = form.content.clone();
+    let private = form.private;
     let max_content_bytes = state.config.max_content_bytes;
     match store::run(&state.pool, move |conn| {
         store::create_paste(
@@ -355,6 +376,7 @@ async fn create(
             &content,
             &title,
             publish_at,
+            private,
             max_content_bytes,
         )
     })
@@ -368,12 +390,14 @@ async fn create(
             &form.title,
             &form.content,
             form.publish_at_raw(),
+            private,
         ),
         Err(AppError::BadRequest(message)) => render_new(
             Some(&message),
             &form.title,
             &form.content,
             form.publish_at_raw(),
+            private,
         ),
         Err(e) => Err(e.into()),
     }
@@ -398,6 +422,7 @@ async fn created(
         read_url: state.config.absolute_url(&format!("/p/{}", paste.id)),
         subscribe_url: subscribe_url(&state, &paste.id).unwrap_or_default(),
         revealed: paste.publish_at <= now_unix(),
+        private: paste.private,
     };
     Ok(Html(tmpl.render()?).into_response())
 }
@@ -407,12 +432,14 @@ fn render_new(
     title: &str,
     content: &str,
     publish_at: &str,
+    private: bool,
 ) -> Result<Response, PageError> {
     let tmpl = NewTemplate {
         error: error.unwrap_or_default().to_string(),
         title: title.to_string(),
         content: content.to_string(),
         publish_at: publish_at.to_string(),
+        private,
     };
     Ok(Html(tmpl.render()?).into_response())
 }
@@ -424,6 +451,7 @@ struct NewTemplate {
     title: String,
     content: String,
     publish_at: String,
+    private: bool,
 }
 
 #[derive(Template)]
@@ -435,6 +463,7 @@ struct CreatedTemplate {
     read_url: String,
     subscribe_url: String,
     revealed: bool,
+    private: bool,
 }
 
 #[derive(Template)]

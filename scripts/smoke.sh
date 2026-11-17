@@ -97,6 +97,17 @@ check "$(echo "$queried" | jq -r .title)" "from-query" "plain text honors query 
 future=$(curl -sS -X POST "$BASE/api/paste" -H 'content-type: application/json' \
   -d '{"content":"top secret","title":"secret","publish_at":"2030-01-01T00:00:00Z"}' | jq -r .id)
 check "$(curl -sS -o /dev/null -w '%{http_code}' "$BASE/p/$future")" "425" "scheduled paste -> 425"
+check "$(curl -sS "$BASE/p/$future" | grep -c '2030-01-01T00:00:00Z')" "1" "scheduled paste response includes reveal time"
+check "$(curl -sS -D - -o /dev/null "$BASE/p/$future" | grep -ic '^x-reveal-at: 2030-01-01T00:00:00Z')" "1" "scheduled paste sends x-reveal-at"
+
+# --- JSON API: private pastes are readable by id but unlisted ---
+private=$(curl -sS -X POST "$BASE/api/paste" -H 'content-type: application/json' \
+  -d '{"content":"unlisted body","title":"unlisted title","private":true}')
+private_id=$(echo "$private" | jq -r .id)
+check "$(echo "$private" | jq -r .private)" "true" "api create returns the private flag"
+check "$(curl -sS "$BASE/p/$private_id")" "unlisted body" "private paste is readable by id"
+check "$(curl -sS "$BASE/api/pastes" | jq -r --arg id "$private_id" '[.pastes[].id] | index($id) == null')" "true" "private paste is excluded from the api listing"
+check "$(curl -sS "$BASE/" | grep -c "$private_id")" "0" "private paste is excluded from the web listing"
 
 # --- JSON API: listing ---
 check "$(curl -sS "$BASE/api/pastes" | jq -r --arg id "$id" '[.pastes[].id] | index($id) != null')" "true" "api listing includes the paste"
@@ -116,6 +127,13 @@ check "$(curl -sS -o /dev/null -w '%{http_code}' "$created_path")" "200" "create
 check "$(curl -sS "$created_path" | grep -c 'From the web')" "1" "created page shows the title"
 created_id=$(basename "$created_path")
 check "$(curl -sS "$created_path" | grep -c "https://paste.example.com/p/$created_id")" "1" "created page uses an absolute url"
+
+private_path=$(curl -sS -o /dev/null -w '%{redirect_url}' -X POST "$BASE/new" \
+  --data-urlencode 'title=Web private' --data-urlencode 'content=web private content' \
+  --data-urlencode 'private=true')
+web_private_id=$(basename "$private_path")
+check "$(curl -sS "$BASE/" | grep -c "$web_private_id")" "0" "web form can create an unlisted paste"
+check "$(curl -sS "$private_path" | grep -c 'private (not listed)')" "1" "created page marks the paste private"
 
 echo "-----------------------------------"
 echo "PASS=$pass FAIL=$fail"

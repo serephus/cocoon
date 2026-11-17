@@ -12,6 +12,7 @@
       {% endif %}
       <div class="meta">
         {% if revealed %}public{% else %}reveals at {{ publish_at }} UTC{% endif %}
+        {% if private %}&middot; private (not listed){% endif %}
       </div>
 
       <p>
