@@ -72,6 +72,27 @@ body2=$(curl -sS -w '\n%{http_code}' -X POST "$BASE/api/paste" -H 'content-type:
   -d '{"content":"hello world","title":"greeting","publish_at":"2020-01-01T00:00:00Z"}')
 check "$(echo "$body2" | tail -1)" "200" "duplicate create is idempotent"
 
+# --- API: plain text and form/multipart bodies ---
+plain=$(printf 'plain text body' | curl -sS -X POST "$BASE/api/paste" \
+  -H 'content-type: text/plain' --data-binary @-)
+plain_id=$(echo "$plain" | jq -r .id)
+check "$(curl -sS "$BASE/p/$plain_id")" "plain text body" "api accepts raw text"
+
+multipart=$(printf 'multipart body' | curl -sS -X POST "$BASE/api/paste" \
+  -F 'c=@-' -F 'title=upload')
+multipart_id=$(echo "$multipart" | jq -r .id)
+check "$(curl -sS "$BASE/p/$multipart_id")" "multipart body" "api accepts multipart c=@-"
+check "$(echo "$multipart" | jq -r .title)" "upload" "multipart title is used"
+
+urlencoded=$(curl -sS -X POST "$BASE/api/paste" --data-urlencode 'c=form body')
+urlencoded_id=$(echo "$urlencoded" | jq -r .id)
+check "$(curl -sS "$BASE/p/$urlencoded_id")" "form body" "api accepts urlencoded c"
+
+queried=$(printf 'query body' | curl -sS -X POST \
+  "$BASE/api/paste?title=from-query&publish_at=2020-01-01T00:00:00Z" \
+  -H 'content-type: text/plain' --data-binary @-)
+check "$(echo "$queried" | jq -r .title)" "from-query" "plain text honors query metadata"
+
 # --- JSON API: a scheduled paste reads as 425 ---
 future=$(curl -sS -X POST "$BASE/api/paste" -H 'content-type: application/json' \
   -d '{"content":"top secret","title":"secret","publish_at":"2030-01-01T00:00:00Z"}' | jq -r .id)
