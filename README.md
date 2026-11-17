@@ -42,7 +42,7 @@ just the normal subscriber notification.
 | `GET` | `/p/{id}` | Raw `text/plain` content once revealed; `425` before; `404` if unknown. |
 | `GET`/`POST` | `/new` | Creation form for anonymous pastes. |
 | `GET` | `/created/{id}` | Confirmation with the id, raw link, and a Telegram subscribe link. |
-| `POST` | `/api/paste` | Create an anonymous paste (JSON; idempotent). |
+| `POST` | `/api/paste` | Create an anonymous paste (JSON, form, multipart, or raw text; idempotent). |
 | `GET` | `/api/pastes` | JSON listing. |
 | `GET` | `/healthz` | Liveness probe. |
 
@@ -54,6 +54,18 @@ toggles; the API uses `status=all|revealed|scheduled`), `sort`
 API responses (`POST /api/paste` and `GET /api/pastes`) return **absolute**
 `url` fields built from `COCOON_PUBLIC_URL`, so clients don't need to know the
 host.
+
+`POST /api/paste` accepts several body formats:
+
+| `Content-Type` | Content |
+| --- | --- |
+| `application/json` | `{"content": "...", "title": "...", "publish_at": "..."}` |
+| `text/plain` (or missing/other) | The raw request body. |
+| `application/x-www-form-urlencoded` | `c=...` (alias `content`), `title`, `publish_at`. |
+| `multipart/form-data` | The same fields, so `cmd \| curl -F "c=@-" https://.../api/paste` works. |
+
+With a raw body, `title` and `publish_at` can be set through query parameters,
+e.g. `.../api/paste?title=note&publish_at=2030-01-01`.
 
 Content is limited to 4 MiB (`COCOON_MAX_CONTENT_BYTES`). Telegram text
 messages cap `/new` at 4096 characters, so larger pastes are created via the

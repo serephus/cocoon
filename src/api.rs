@@ -1,7 +1,8 @@
 use axum::Json;
 use axum::Router;
-use axum::extract::{Query, State};
-use axum::http::StatusCode;
+use axum::body::Bytes;
+use axum::extract::{FromRequest, Multipart, Query, Request, State};
+use axum::http::{StatusCode, header};
 use axum::routing::{get, post};
 use serde::{Deserialize, Serialize};
 
@@ -27,6 +28,136 @@ pub struct CreateRequest {
     pub publish_at: Option<String>,
 }
 
+/// Fields accepted from `multipart/form-data` and
+/// `application/x-www-form-urlencoded` bodies. `c` is the fars.ee-compatible
+/// field name; `content` is accepted as an alias.
+#[derive(Debug, Default, Deserialize)]
+struct CreateForm {
+    #[serde(default)]
+    c: Option<String>,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    publish_at: Option<String>,
+}
+
+impl CreateForm {
+    fn into_input(self, fallback_content: Option<String>) -> CreateInput {
+        CreateInput {
+            content: self.c.or(fallback_content).unwrap_or_default(),
+            title: self.title,
+            publish_at: self.publish_at,
+        }
+    }
+}
+
+/// Optional metadata that can come from the query string, so raw text bodies
+/// can still set a title or a publish time.
+#[derive(Debug, Default, Deserialize)]
+struct CreateQuery {
+    title: Option<String>,
+    publish_at: Option<String>,
+}
+
+struct CreateInput {
+    content: String,
+    title: Option<String>,
+    publish_at: Option<String>,
+}
+
+async fn parse_create(
+    state: &AppState,
+    request: Request,
+    query: CreateQuery,
+) -> Result<CreateInput, AppError> {
+    let mime = request
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+
+    let mut input = match mime.as_str() {
+        "application/json" => {
+            let Json(req) = Json::<CreateRequest>::from_request(request, state)
+                .await
+                .map_err(|e| AppError::BadRequest(e.body_text()))?;
+            CreateInput {
+                content: req.content,
+                title: req.title,
+                publish_at: req.publish_at,
+            }
+        }
+        "multipart/form-data" => {
+            let mut multipart = Multipart::from_request(request, state)
+                .await
+                .map_err(|e| AppError::BadRequest(e.body_text()))?;
+            let mut form = CreateForm::default();
+            while let Some(field) = multipart
+                .next_field()
+                .await
+                .map_err(|e| AppError::BadRequest(e.to_string()))?
+            {
+                let name = field.name().unwrap_or_default().to_string();
+                let text = field
+                    .text()
+                    .await
+                    .map_err(|e| AppError::BadRequest(e.to_string()))?;
+                match name.as_str() {
+                    "c" | "content" => form.c = Some(text),
+                    "title" => form.title = Some(text),
+                    "publish_at" => form.publish_at = Some(text),
+                    _ => {}
+                }
+            }
+            form.into_input(None)
+        }
+        "application/x-www-form-urlencoded" => {
+            let bytes = Bytes::from_request(request, state)
+                .await
+                .map_err(|e| AppError::BadRequest(e.body_text()))?;
+            let raw = String::from_utf8(bytes.to_vec())
+                .map_err(|_| AppError::BadRequest("body must be valid UTF-8".to_string()))?;
+            match serde_urlencoded::from_str::<CreateForm>(&raw) {
+                Ok(form) => form.into_input(Some(raw)),
+                // Not form-shaped (e.g. `curl --data-binary @-`), so the body
+                // itself is the paste content.
+                Err(_) => CreateInput {
+                    content: raw,
+                    title: None,
+                    publish_at: None,
+                },
+            }
+        }
+        // No content type, `text/plain`, or anything else: the raw body is the
+        // content.
+        _ => {
+            let bytes = Bytes::from_request(request, state)
+                .await
+                .map_err(|e| AppError::BadRequest(e.body_text()))?;
+            let content = String::from_utf8(bytes.to_vec())
+                .map_err(|_| AppError::BadRequest("body must be valid UTF-8".to_string()))?;
+            CreateInput {
+                content,
+                title: None,
+                publish_at: None,
+            }
+        }
+    };
+
+    if input.title.is_none() {
+        input.title = query.title;
+    }
+    if input.publish_at.is_none() {
+        input.publish_at = query.publish_at;
+    }
+    Ok(input)
+}
+
 #[derive(Debug, Serialize)]
 pub struct CreateResponse {
     pub id: String,
@@ -39,12 +170,16 @@ pub struct CreateResponse {
 
 async fn create(
     State(state): State<AppState>,
-    Json(req): Json<CreateRequest>,
+    Query(query): Query<CreateQuery>,
+    request: Request,
 ) -> Result<(StatusCode, Json<CreateResponse>), ApiError> {
+    let req = parse_create(&state, request, query).await?;
     let title = req.title.unwrap_or_default().trim().to_string();
-    let publish_at = match &req.publish_at {
-        Some(value) => parse_publish_at(value).map_err(AppError::BadRequest)?,
-        None => now_unix(),
+    let publish_at = match req.publish_at {
+        Some(value) if !value.trim().is_empty() => {
+            parse_publish_at(&value).map_err(AppError::BadRequest)?
+        }
+        _ => now_unix(),
     };
     let content = req.content;
     let max_content_bytes = state.config.max_content_bytes;
