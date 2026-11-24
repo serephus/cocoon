@@ -80,7 +80,7 @@ web or API; when showing a long paste, the bot sends it as a `.txt` document.
 pub enum User { Anonymous, Telegram(i64) }
 ```
 
-Stored as a single `owner` column (`"anonymous"` or `"telegram:<id>"`).
+Stored as a single `owner` field (`"anonymous"` or `"telegram:<id>"`).
 Authorization is two pure rules: a paste is readable once revealed, or by its
 non-anonymous owner before then; and only a non-anonymous owner may edit or
 delete it before reveal. New frontends can add a variant without touching those
@@ -88,7 +88,7 @@ rules.
 
 ## Subscriptions
 
-`/subscribe <id>` records a row in `subscriptions`. A background task checks
+`/subscribe <id>` records an entry in `subscriptions`. A background task checks
 every 30 seconds for newly-revealed pastes, DMs every subscriber the metadata
 and content, then clears those subscriptions. `COCOON_MAX_SUBSCRIPTIONS` caps
 how many pastes one user can subscribe to (default 100). The web listing and
@@ -109,7 +109,11 @@ visitors can subscribe through the bot.
 | `COCOON_MAX_SUBSCRIPTIONS` | `100` | no | Per-user subscription cap. |
 | `COCOON_MAX_CONTENT_BYTES` | `4194304` (4 MiB) | no | Maximum paste content size. |
 | `COCOON_BIND` | `127.0.0.1:3000` | no | Listen address. |
-| `COCOON_DB` | `cocoon.db` | no | SQLite database path. |
+| `COCOON_DB` | `cocoon.db` | no | redb database path. |
+
+`COCOON_DB` is a redb file. Databases created by older SQLite-backed versions
+are not opened automatically; point `COCOON_DB` at a fresh path or migrate the
+data separately.
 
 The bot token and webhook secret each accept a `_FILE` variant that reads the
 value from a file (a single trailing newline is stripped), for Docker/Kubernetes

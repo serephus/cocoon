@@ -16,12 +16,9 @@ mod web;
 use std::sync::Arc;
 
 use anyhow::Context;
-use diesel_migrations::{EmbeddedMigrations, MigrationHarness, embed_migrations};
 use teloxide::prelude::Requester;
 use tokio::net::TcpListener;
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
-
-pub const MIGRATIONS: EmbeddedMigrations = embed_migrations!();
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -32,11 +29,6 @@ async fn main() -> anyhow::Result<()> {
 
     let config = config::Config::from_env()?;
     let pool = store::build_pool(&config.db_path)?;
-    {
-        let mut conn = pool.get().context("database connection")?;
-        conn.run_pending_migrations(MIGRATIONS)
-            .map_err(|e| anyhow::anyhow!("running migrations: {e}"))?;
-    }
 
     let bot = bot::messenger::build_bot(&config)?;
     // Only ask Telegram who we are when we will actually need the handle

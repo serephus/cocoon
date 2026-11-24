@@ -52,7 +52,7 @@ pub async fn handle_text(
 ) -> Result<(), AppError> {
     // Continue an active wizard unless the user typed a command.
     let conversation = store::run(&state.pool, move |conn| {
-        Ok(store::get_conversation(conn, user_id)?)
+        store::get_conversation(conn, user_id)
     })
     .await?;
     if let Some(conversation) = conversation {
@@ -488,7 +488,7 @@ async fn list_page(state: &AppState, chat_id: i64, page: i64) -> Result<(), AppE
 async fn mine(state: &AppState, chat_id: i64, user_id: i64) -> Result<(), AppError> {
     let owner = User::Telegram(user_id).storage_key();
     let pastes = store::run(&state.pool, move |conn| {
-        Ok(store::list_owner_pastes(conn, &owner)?)
+        store::list_owner_pastes(conn, &owner)
     })
     .await?;
     if pastes.is_empty() {
@@ -601,7 +601,7 @@ async fn subscribe_cmd(
     }
 
     let count = store::run(&state.pool, move |conn| {
-        Ok(store::subscription_count(conn, user_id)?)
+        store::subscription_count(conn, user_id)
     })
     .await?;
     if count >= state.config.max_subscriptions {
@@ -654,7 +654,7 @@ async fn unsubscribe_cmd(
 
 async fn subscriptions_cmd(state: &AppState, chat_id: i64, user_id: i64) -> Result<(), AppError> {
     let subs = store::run(&state.pool, move |conn| {
-        Ok(store::list_subscriptions(conn, user_id)?)
+        store::list_subscriptions(conn, user_id)
     })
     .await?;
     if subs.is_empty() {
@@ -664,7 +664,7 @@ async fn subscriptions_cmd(state: &AppState, chat_id: i64, user_id: i64) -> Resu
     let mut lines = vec![format!("Your subscriptions ({}):", subs.len())];
     for subscription in subs.iter().take(50) {
         let id = subscription.paste_id.clone();
-        let paste = store::run(&state.pool, move |conn| Ok(store::get_paste(conn, &id)?)).await?;
+        let paste = store::run(&state.pool, move |db| store::get_paste(db, &id)).await?;
         match paste {
             Some(paste) => lines.push(format_row(&paste, now)),
             None => lines.push(format!("{}  (deleted)", subscription.paste_id)),
@@ -714,7 +714,7 @@ pub async fn confirm_delete(
 
 async fn fetch(state: &AppState, id: &str) -> Result<Option<Paste>, AppError> {
     let id = id.to_string();
-    store::run(&state.pool, move |conn| Ok(store::get_paste(conn, &id)?)).await
+    store::run(&state.pool, move |db| store::get_paste(db, &id)).await
 }
 
 async fn send_paste(state: &AppState, chat_id: i64, paste: &Paste) -> Result<(), AppError> {
@@ -900,8 +900,6 @@ mod tests {
     }
 
     fn test_state() -> (AppState, Arc<FakeMessenger>) {
-        use diesel_migrations::MigrationHarness;
-
         let messenger = Arc::new(FakeMessenger::default());
         let path = std::env::temp_dir().join(format!(
             "cocoon-test-{}.db",
@@ -911,10 +909,6 @@ mod tests {
                 .as_nanos()
         ));
         let pool = crate::store::build_pool(path.to_str().unwrap()).unwrap();
-        {
-            let mut conn = pool.get().unwrap();
-            conn.run_pending_migrations(crate::MIGRATIONS).unwrap();
-        }
         let config = crate::config::Config {
             bind: "127.0.0.1:0".parse().unwrap(),
             db_path: path.to_string_lossy().into_owned(),
@@ -946,7 +940,7 @@ mod tests {
     async fn user_pastes(state: &AppState, user_id: i64) -> Vec<Paste> {
         let owner = User::Telegram(user_id).storage_key();
         crate::store::run(&state.pool, move |conn| {
-            Ok(crate::store::list_owner_pastes(conn, &owner)?)
+            crate::store::list_owner_pastes(conn, &owner)
         })
         .await
         .unwrap()
@@ -1019,7 +1013,7 @@ mod tests {
         let (state, _) = test_state();
         let id = create(&state, 777, "hello", "2030-01-01 00:00", "t").await;
         let subs = crate::store::run(&state.pool, |conn| {
-            Ok(crate::store::list_subscriptions(conn, 777)?)
+            crate::store::list_subscriptions(conn, 777)
         })
         .await
         .unwrap();

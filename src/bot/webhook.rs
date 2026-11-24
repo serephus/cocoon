@@ -4,7 +4,6 @@ use axum::http::{HeaderMap, StatusCode};
 use teloxide::types::Update;
 
 use crate::bot::commands;
-use crate::error::AppError;
 use crate::state::AppState;
 use crate::store;
 
@@ -21,18 +20,10 @@ pub async fn handle(
     }
 
     let update_id = update.id.0 as i64;
-    match store::run(&state.pool, move |conn| {
-        store::register_update(conn, update_id)?;
-        Ok(())
-    })
-    .await
-    {
-        Ok(()) => {}
+    match store::run(&state.pool, move |db| store::register_update(db, update_id)).await {
+        Ok(true) => {}
         // Duplicate delivery: already handled.
-        Err(AppError::Db(diesel::result::Error::DatabaseError(
-            diesel::result::DatabaseErrorKind::UniqueViolation,
-            _,
-        ))) => return StatusCode::OK,
+        Ok(false) => return StatusCode::OK,
         Err(e) => {
             tracing::error!("failed to register update: {e}");
             return StatusCode::INTERNAL_SERVER_ERROR;
