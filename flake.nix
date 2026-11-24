@@ -46,7 +46,7 @@
           "pastebin"
           "time-lock"
           "self-hosted"
-          "sqlite"
+          "redb"
         ];
         visibility = "public";
 

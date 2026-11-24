@@ -27,10 +27,7 @@ async fn tick(state: &AppState) -> Result<(), AppError> {
     })
     .await?;
 
-    let due = store::run(&state.pool, move |conn| {
-        Ok(store::pending_reveals(conn, now)?)
-    })
-    .await?;
+    let due = store::run(&state.pool, move |conn| store::pending_reveals(conn, now)).await?;
     for paste in due {
         notify_subscribers(state, &paste).await;
 
@@ -49,7 +46,7 @@ async fn tick(state: &AppState) -> Result<(), AppError> {
 async fn notify_subscribers(state: &AppState, paste: &Paste) {
     let id = paste.id.clone();
     let subscribers = match store::run(&state.pool, move |conn| {
-        Ok(store::subscribers_for_paste(conn, &id)?)
+        store::subscribers_for_paste(conn, &id)
     })
     .await
     {

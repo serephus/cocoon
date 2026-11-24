@@ -13,9 +13,7 @@ pub enum AppError {
     #[error("not found")]
     NotFound,
     #[error("database error: {0}")]
-    Db(#[from] diesel::result::Error),
-    #[error("connection pool error: {0}")]
-    Pool(String),
+    Db(String),
     #[error("telegram error: {0}")]
     Telegram(String),
     #[error("a paste with identical content already exists: {0}")]
@@ -31,7 +29,7 @@ impl AppError {
             AppError::PayloadTooLarge { .. } => StatusCode::PAYLOAD_TOO_LARGE,
             AppError::NotFound => StatusCode::NOT_FOUND,
             AppError::Duplicate(_) => StatusCode::CONFLICT,
-            AppError::Db(_) | AppError::Pool(_) | AppError::Telegram(_) | AppError::Internal(_) => {
+            AppError::Db(_) | AppError::Telegram(_) | AppError::Internal(_) => {
                 StatusCode::INTERNAL_SERVER_ERROR
             }
         }
@@ -53,6 +51,42 @@ impl From<teloxide::RequestError> for AppError {
 impl From<reqwest::Error> for AppError {
     fn from(e: reqwest::Error) -> Self {
         AppError::Telegram(e.to_string())
+    }
+}
+
+impl From<redb::DatabaseError> for AppError {
+    fn from(e: redb::DatabaseError) -> Self {
+        AppError::Db(e.to_string())
+    }
+}
+
+impl From<redb::TransactionError> for AppError {
+    fn from(e: redb::TransactionError) -> Self {
+        AppError::Db(e.to_string())
+    }
+}
+
+impl From<redb::TableError> for AppError {
+    fn from(e: redb::TableError) -> Self {
+        AppError::Db(e.to_string())
+    }
+}
+
+impl From<redb::StorageError> for AppError {
+    fn from(e: redb::StorageError) -> Self {
+        AppError::Db(e.to_string())
+    }
+}
+
+impl From<redb::CommitError> for AppError {
+    fn from(e: redb::CommitError) -> Self {
+        AppError::Db(e.to_string())
+    }
+}
+
+impl From<serde_json::Error> for AppError {
+    fn from(e: serde_json::Error) -> Self {
+        AppError::Db(e.to_string())
     }
 }
 

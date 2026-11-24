@@ -1,12 +1,10 @@
 //! Shared listing query for the web page and the JSON API.
 
-use diesel::prelude::*;
-use diesel::sqlite::Sqlite;
 use serde::{Deserialize, Serialize};
 
 use crate::clock::{format_rfc3339, parse_publish_at};
 use crate::error::AppError;
-use crate::store::{self, DbPool, models::PasteMeta, schema::pastes};
+use crate::store::{self, DbPool, models::PasteMeta};
 
 pub const DEFAULT_PER_PAGE: i64 = 50;
 pub const MAX_PER_PAGE: i64 = 100;
@@ -161,56 +159,42 @@ pub async fn fetch_list(
     opts: ListOptions,
     now: i64,
 ) -> Result<(Vec<PasteMeta>, bool), AppError> {
-    store::run(pool, move |conn| {
-        let mut q = pastes::table
-            .filter(pastes::private.eq(false))
-            .select((
-                pastes::id,
-                pastes::owner,
-                pastes::title,
-                pastes::publish_at,
-                pastes::created_at,
-            ))
-            .into_boxed::<Sqlite>();
+    store::run(pool, move |db| {
+        let mut rows = store::public_paste_meta(db)?;
 
-        q = match (opts.status.revealed, opts.status.scheduled) {
-            (true, true) => q,
-            (true, false) => q.filter(pastes::publish_at.le(now)),
-            (false, true) => q.filter(pastes::publish_at.gt(now)),
-            (false, false) => q.filter(pastes::publish_at.gt(now).and(pastes::publish_at.le(now))),
-        };
+        rows.retain(|meta| {
+            let revealed = meta.publish_at <= now;
+            let scheduled = meta.publish_at > now;
+            (opts.status.revealed && revealed) || (opts.status.scheduled && scheduled)
+        });
         if let Some(query) = &opts.query {
-            q = q.filter(pastes::title.like(format!("%{query}%")));
+            let query = query.to_lowercase();
+            rows.retain(|meta| meta.title.to_lowercase().contains(&query));
         }
         if let Some(from) = opts.from {
-            q = q.filter(pastes::publish_at.ge(from));
+            rows.retain(|meta| meta.publish_at >= from);
         }
         if let Some(to) = opts.to {
-            q = q.filter(pastes::publish_at.le(to));
+            rows.retain(|meta| meta.publish_at <= to);
         }
 
-        let q = match (opts.sort, opts.order) {
-            (SortKey::CreatedAt, SortOrder::Desc) => {
-                q.order((pastes::created_at.desc(), pastes::id.asc()))
-            }
-            (SortKey::CreatedAt, SortOrder::Asc) => {
-                q.order((pastes::created_at.asc(), pastes::id.asc()))
-            }
-            (SortKey::PublishAt, SortOrder::Desc) => {
-                q.order((pastes::publish_at.desc(), pastes::id.asc()))
-            }
-            (SortKey::PublishAt, SortOrder::Asc) => {
-                q.order((pastes::publish_at.asc(), pastes::id.asc()))
-            }
-        };
+        rows.sort_by(|a, b| {
+            let ordering = match (opts.sort, opts.order) {
+                (SortKey::CreatedAt, SortOrder::Desc) => b.created_at.cmp(&a.created_at),
+                (SortKey::CreatedAt, SortOrder::Asc) => a.created_at.cmp(&b.created_at),
+                (SortKey::PublishAt, SortOrder::Desc) => b.publish_at.cmp(&a.publish_at),
+                (SortKey::PublishAt, SortOrder::Asc) => a.publish_at.cmp(&b.publish_at),
+            };
+            ordering.then_with(|| a.id.cmp(&b.id))
+        });
 
-        let limit = opts.per_page + 1;
-        let offset = (opts.page - 1) * opts.per_page;
-        let mut rows = q.limit(limit).offset(offset).load::<PasteMeta>(conn)?;
-        let has_next = rows.len() as i64 > opts.per_page;
-        if has_next {
-            rows.truncate(opts.per_page as usize);
-        }
+        let offset = (opts.page - 1).saturating_mul(opts.per_page).max(0) as usize;
+        let has_next = rows.len() > offset.saturating_add(opts.per_page as usize);
+        let rows: Vec<PasteMeta> = rows
+            .into_iter()
+            .skip(offset)
+            .take(opts.per_page as usize)
+            .collect();
         Ok((rows, has_next))
     })
     .await

@@ -51,7 +51,7 @@ in
           COCOON_DB = mkOption {
             type = types.str;
             default = "/var/lib/cocoon-paste/cocoon.db";
-            description = "Path to the SQLite database.";
+            description = "Path to the redb database.";
           };
 
           COCOON_PUBLIC_URL = mkOption {

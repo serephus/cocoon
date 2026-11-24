@@ -227,7 +227,7 @@ async fn create(
 
     let paste = store::run(&state.pool, {
         let id = id.clone();
-        move |conn| Ok(store::get_paste(conn, &id)?)
+        move |db| store::get_paste(db, &id)
     })
     .await?;
     let Some(paste) = paste else {

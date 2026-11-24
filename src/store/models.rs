@@ -1,10 +1,4 @@
-use diesel::prelude::*;
-
-use super::schema::{conversations, pastes, subscriptions, updates};
-
-#[derive(Debug, Clone, Queryable, Selectable)]
-#[diesel(table_name = pastes)]
-#[diesel(check_for_backend(diesel::sqlite::Sqlite))]
+#[derive(Debug, Clone)]
 pub struct Paste {
     pub id: String,
     /// `User::storage_key()` of the owner.
@@ -21,22 +15,7 @@ pub struct Paste {
     pub private: bool,
 }
 
-#[derive(Debug, Insertable)]
-#[diesel(table_name = pastes)]
-pub struct NewPaste<'a> {
-    pub id: &'a str,
-    pub owner: &'a str,
-    pub content: &'a str,
-    pub title: &'a str,
-    pub publish_at: i64,
-    pub created_at: i64,
-    pub updated_at: i64,
-    pub notified: bool,
-    pub private: bool,
-}
-
-#[derive(Debug, Clone, Queryable)]
-#[diesel(check_for_backend(diesel::sqlite::Sqlite))]
+#[derive(Debug, Clone)]
 pub struct PasteMeta {
     pub id: String,
     pub owner: String,
@@ -45,9 +24,7 @@ pub struct PasteMeta {
     pub created_at: i64,
 }
 
-#[derive(Debug, Clone, Queryable, Selectable)]
-#[diesel(table_name = conversations)]
-#[diesel(check_for_backend(diesel::sqlite::Sqlite))]
+#[derive(Debug, Clone)]
 pub struct Conversation {
     /// Present in the row; the user id is the lookup key and not re-read.
     #[allow(dead_code)]
@@ -62,8 +39,7 @@ pub struct Conversation {
     pub updated_at: i64,
 }
 
-#[derive(Debug, Insertable)]
-#[diesel(table_name = conversations)]
+#[derive(Debug)]
 pub struct NewConversation<'a> {
     pub user_id: i64,
     pub kind: &'a str,
@@ -75,28 +51,11 @@ pub struct NewConversation<'a> {
     pub updated_at: i64,
 }
 
-#[derive(Debug, Clone, Queryable, Selectable)]
-#[diesel(table_name = subscriptions)]
-#[diesel(check_for_backend(diesel::sqlite::Sqlite))]
+#[derive(Debug, Clone)]
 pub struct Subscription {
     #[allow(dead_code)]
     pub user_id: i64,
     pub paste_id: String,
     #[allow(dead_code)]
     pub created_at: i64,
-}
-
-#[derive(Debug, Insertable)]
-#[diesel(table_name = subscriptions)]
-pub struct NewSubscription<'a> {
-    pub user_id: i64,
-    pub paste_id: &'a str,
-    pub created_at: i64,
-}
-
-#[derive(Debug, Insertable)]
-#[diesel(table_name = updates)]
-pub struct NewUpdate {
-    pub update_id: i64,
-    pub received_at: i64,
 }

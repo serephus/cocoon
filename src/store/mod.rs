@@ -1,12 +1,9 @@
 pub mod models;
-pub mod schema;
 
-use std::time::Duration;
+use std::sync::Arc;
 
-use diesel::connection::SimpleConnection;
-use diesel::prelude::*;
-use diesel::r2d2::{ConnectionManager, CustomizeConnection, Pool};
-use diesel::sqlite::SqliteConnection;
+use redb::{Database, ReadableTable, TableDefinition};
+use serde::{Deserialize, Serialize};
 
 use crate::clock::now_unix;
 use crate::error::AppError;
@@ -14,101 +11,200 @@ use crate::id::new_id;
 use crate::user::User;
 
 use self::models::*;
-use self::schema::*;
 
-pub type DbPool = Pool<ConnectionManager<SqliteConnection>>;
+/// Shared handle to the redb database. redb serializes writers internally, so
+/// no connection pool is needed; the alias is kept for call-site continuity.
+pub type DbPool = Arc<Database>;
 
-/// Per-connection pragmas. `journal_mode = WAL` is set once in [`build_pool`]
-/// (concurrent acquisitions would otherwise race for the lock).
-#[derive(Debug)]
-struct SqlitePragmas;
+const CONTENTS: TableDefinition<&str, &str> = TableDefinition::new("pastes");
+const PASTE_META: TableDefinition<&str, &str> = TableDefinition::new("paste_meta");
+const CONVERSATIONS: TableDefinition<i64, &str> = TableDefinition::new("conversations");
+const SUBSCRIPTIONS: TableDefinition<(i64, &str), i64> = TableDefinition::new("subscriptions");
+const UPDATES: TableDefinition<i64, i64> = TableDefinition::new("updates");
 
-impl CustomizeConnection<SqliteConnection, diesel::r2d2::Error> for SqlitePragmas {
-    fn on_acquire(&self, conn: &mut SqliteConnection) -> Result<(), diesel::r2d2::Error> {
-        if let Err(e) = conn.batch_execute(
-            "PRAGMA busy_timeout = 5000;
-             PRAGMA synchronous = NORMAL;
-             PRAGMA foreign_keys = ON;",
-        ) {
-            tracing::error!("failed to configure sqlite connection: {e}");
+#[derive(Debug, Serialize, Deserialize)]
+struct PasteRecord {
+    owner: String,
+    title: String,
+    publish_at: i64,
+    created_at: i64,
+    updated_at: i64,
+    notified: bool,
+    private: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ConversationRecord {
+    kind: String,
+    step: String,
+    paste_id: String,
+    content: String,
+    title: String,
+    publish_at: Option<i64>,
+    updated_at: i64,
+}
+
+struct StoredPaste {
+    id: String,
+    record: PasteRecord,
+}
+
+impl StoredPaste {
+    fn into_paste(self, content: String) -> Paste {
+        Paste {
+            id: self.id,
+            owner: self.record.owner,
+            content,
+            title: self.record.title,
+            publish_at: self.record.publish_at,
+            created_at: self.record.created_at,
+            updated_at: self.record.updated_at,
+            notified: self.record.notified,
+            private: self.record.private,
         }
-        Ok(())
+    }
+
+    fn meta(&self) -> PasteMeta {
+        PasteMeta {
+            id: self.id.clone(),
+            owner: self.record.owner.clone(),
+            title: self.record.title.clone(),
+            publish_at: self.record.publish_at,
+            created_at: self.record.created_at,
+        }
     }
 }
 
 pub fn build_pool(db_path: &str) -> anyhow::Result<DbPool> {
+    let db = Database::create(db_path)?;
+    let txn = db.begin_write()?;
     {
-        let mut conn = SqliteConnection::establish(db_path)?;
-        conn.batch_execute("PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL;")?;
+        txn.open_table(CONTENTS)?;
+        txn.open_table(PASTE_META)?;
+        txn.open_table(CONVERSATIONS)?;
+        txn.open_table(SUBSCRIPTIONS)?;
+        txn.open_table(UPDATES)?;
     }
-
-    let manager = ConnectionManager::<SqliteConnection>::new(db_path);
-    let pool = Pool::builder()
-        .max_size(16)
-        .connection_timeout(Duration::from_secs(10))
-        .connection_customizer(Box::new(SqlitePragmas))
-        .build(manager)?;
-    Ok(pool)
+    txn.commit()?;
+    Ok(Arc::new(db))
 }
 
 /// Run a blocking database closure on the blocking pool.
-pub async fn run<T, F>(pool: &DbPool, f: F) -> Result<T, AppError>
+pub async fn run<T, F>(db: &DbPool, f: F) -> Result<T, AppError>
 where
-    F: FnOnce(&mut SqliteConnection) -> Result<T, AppError> + Send + 'static,
+    F: FnOnce(&Database) -> Result<T, AppError> + Send + 'static,
     T: Send + 'static,
 {
-    let pool = pool.clone();
-    tokio::task::spawn_blocking(move || {
-        let mut conn = pool.get().map_err(|e| AppError::Pool(e.to_string()))?;
-        f(&mut conn)
-    })
-    .await
-    .map_err(|e| AppError::Internal(format!("blocking task failed: {e}")))?
+    let db = db.clone();
+    tokio::task::spawn_blocking(move || f(&db))
+        .await
+        .map_err(|e| AppError::Internal(format!("blocking task failed: {e}")))?
+}
+
+fn all_pastes(db: &Database) -> Result<Vec<StoredPaste>, AppError> {
+    let read = db.begin_read()?;
+    let table = read.open_table(PASTE_META)?;
+    let mut rows = Vec::new();
+    for entry in table.iter()? {
+        let (key, value) = entry?;
+        let record = serde_json::from_str(value.value())?;
+        rows.push(StoredPaste {
+            id: key.value().to_string(),
+            record,
+        });
+    }
+    Ok(rows)
+}
+
+fn public_pastes(db: &Database) -> Result<Vec<StoredPaste>, AppError> {
+    let mut rows = all_pastes(db)?;
+    rows.retain(|paste| !paste.record.private);
+    rows.sort_by(|a, b| {
+        b.record
+            .created_at
+            .cmp(&a.record.created_at)
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    Ok(rows)
+}
+
+fn hydrate(db: &Database, rows: Vec<StoredPaste>) -> Result<Vec<Paste>, AppError> {
+    let read = db.begin_read()?;
+    let table = read.open_table(CONTENTS)?;
+    let mut pastes = Vec::with_capacity(rows.len());
+    for row in rows {
+        let content = table
+            .get(row.id.as_str())?
+            .map(|value| value.value().to_string())
+            .ok_or_else(|| AppError::Internal(format!("paste {} has no content", row.id)))?;
+        pastes.push(row.into_paste(content));
+    }
+    Ok(pastes)
 }
 
 // ---------------------------------------------------------------------------
 // Pastes
 // ---------------------------------------------------------------------------
 
-pub fn get_paste(conn: &mut SqliteConnection, id: &str) -> QueryResult<Option<Paste>> {
-    pastes::table.find(id).first(conn).optional()
+pub fn get_paste(db: &Database, id: &str) -> Result<Option<Paste>, AppError> {
+    let read = db.begin_read()?;
+    let meta = read.open_table(PASTE_META)?;
+    let Some(value) = meta.get(id)? else {
+        return Ok(None);
+    };
+    let record: PasteRecord = serde_json::from_str(value.value())?;
+    drop(value);
+
+    let contents = read.open_table(CONTENTS)?;
+    let content = contents
+        .get(id)?
+        .map(|value| value.value().to_string())
+        .ok_or_else(|| AppError::Internal(format!("paste {id} has no content")))?;
+    Ok(Some(
+        StoredPaste {
+            id: id.to_string(),
+            record,
+        }
+        .into_paste(content),
+    ))
 }
 
 /// Every public paste, newest first. Private pastes are only visible to their
 /// owner through [`list_owner_pastes`].
-pub fn list_pastes(
-    conn: &mut SqliteConnection,
-    limit: i64,
-    offset: i64,
-) -> QueryResult<Vec<Paste>> {
-    pastes::table
-        .filter(pastes::private.eq(false))
-        .order((pastes::created_at.desc(), pastes::id.asc()))
-        .limit(limit)
-        .offset(offset)
-        .load(conn)
+pub fn list_pastes(db: &Database, limit: i64, offset: i64) -> Result<Vec<Paste>, AppError> {
+    let rows = public_pastes(db)?;
+    let offset = usize::try_from(offset.max(0)).unwrap_or(usize::MAX);
+    let limit = usize::try_from(limit.max(0)).unwrap_or(usize::MAX);
+    let page = rows.into_iter().skip(offset).take(limit).collect();
+    hydrate(db, page)
 }
 
-pub fn list_owner_pastes(conn: &mut SqliteConnection, owner: &str) -> QueryResult<Vec<Paste>> {
-    pastes::table
-        .filter(pastes::owner.eq(owner))
-        .order((pastes::created_at.desc(), pastes::id.asc()))
-        .load(conn)
+/// Metadata for every public paste, in no particular order.
+pub fn public_paste_meta(db: &Database) -> Result<Vec<PasteMeta>, AppError> {
+    Ok(public_pastes(db)?.iter().map(StoredPaste::meta).collect())
+}
+
+pub fn list_owner_pastes(db: &Database, owner: &str) -> Result<Vec<Paste>, AppError> {
+    let mut rows = all_pastes(db)?;
+    rows.retain(|paste| paste.record.owner == owner);
+    rows.sort_by(|a, b| {
+        b.record
+            .created_at
+            .cmp(&a.record.created_at)
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    hydrate(db, rows)
 }
 
 #[allow(dead_code)]
-pub fn count_pastes(conn: &mut SqliteConnection) -> QueryResult<i64> {
-    pastes::table.count().get_result(conn)
-}
-
-fn id_taken(conn: &mut SqliteConnection, id: &str) -> QueryResult<bool> {
-    diesel::select(diesel::dsl::exists(pastes::table.find(id))).get_result(conn)
+pub fn count_pastes(db: &Database) -> Result<i64, AppError> {
+    Ok(all_pastes(db)?.len() as i64)
 }
 
 /// Insert a new paste, deriving its id. A Telegram owner is auto-subscribed so
 /// they are notified when it reveals.
 pub fn create_paste(
-    conn: &mut SqliteConnection,
+    db: &Database,
     owner: User,
     content: &str,
     title: &str,
@@ -123,36 +219,41 @@ pub fn create_paste(
     }
     let now = now_unix();
     let id = new_id(owner, content, title, publish_at, private);
-    if id_taken(conn, &id)? {
-        return Err(AppError::Duplicate(id));
-    }
     let owner_key = owner.storage_key();
-    conn.transaction::<_, AppError, _>(|conn| {
-        diesel::insert_into(pastes::table)
-            .values(&NewPaste {
-                id: &id,
-                owner: &owner_key,
-                content,
-                title,
-                publish_at,
-                created_at: now,
-                updated_at: now,
-                notified: false,
-                private,
-            })
-            .execute(conn)?;
-        if let Some(user_id) = owner.telegram_id() {
-            subscribe(conn, user_id, &id)?;
+    let txn = db.begin_write()?;
+    {
+        let mut meta = txn.open_table(PASTE_META)?;
+        if meta.get(id.as_str())?.is_some() {
+            return Err(AppError::Duplicate(id));
         }
-        Ok(())
-    })?;
+        let mut contents = txn.open_table(CONTENTS)?;
+        contents.insert(id.as_str(), content)?;
+        let record = PasteRecord {
+            owner: owner_key,
+            title: title.to_string(),
+            publish_at,
+            created_at: now,
+            updated_at: now,
+            notified: false,
+            private,
+        };
+        let json = serde_json::to_string(&record)?;
+        meta.insert(id.as_str(), json.as_str())?;
+        if let Some(user_id) = owner.telegram_id() {
+            let mut subscriptions = txn.open_table(SUBSCRIPTIONS)?;
+            if subscriptions.get((user_id, id.as_str()))?.is_none() {
+                subscriptions.insert((user_id, id.as_str()), now)?;
+            }
+        }
+    }
+    txn.commit()?;
     Ok(id)
 }
 
 /// Update an existing paste, recomputing its id. Returns the new id.
 #[allow(clippy::too_many_arguments)]
 pub fn update_paste(
-    conn: &mut SqliteConnection,
+    db: &Database,
     old_id: &str,
     owner: User,
     content: &str,
@@ -167,150 +268,288 @@ pub fn update_paste(
         });
     }
     let new_id = new_id(owner, content, title, publish_at, private);
-    if new_id != old_id && id_taken(conn, &new_id)? {
-        return Err(AppError::Duplicate(new_id));
+    let owner_key = owner.storage_key();
+    let txn = db.begin_write()?;
+    {
+        let mut meta = txn.open_table(PASTE_META)?;
+        let old: PasteRecord = match meta.get(old_id)? {
+            Some(value) => serde_json::from_str(value.value())?,
+            None => return Err(AppError::NotFound),
+        };
+        if new_id != old_id && meta.get(new_id.as_str())?.is_some() {
+            return Err(AppError::Duplicate(new_id));
+        }
+        let mut contents = txn.open_table(CONTENTS)?;
+        contents.remove(old_id)?;
+        meta.remove(old_id)?;
+        contents.insert(new_id.as_str(), content)?;
+        let record = PasteRecord {
+            owner: owner_key,
+            title: title.to_string(),
+            publish_at,
+            created_at: old.created_at,
+            updated_at: now_unix(),
+            notified: false,
+            private,
+        };
+        let json = serde_json::to_string(&record)?;
+        meta.insert(new_id.as_str(), json.as_str())?;
     }
-    diesel::update(pastes::table.find(old_id))
-        .set((
-            pastes::id.eq(&new_id),
-            pastes::content.eq(content),
-            pastes::title.eq(title),
-            pastes::publish_at.eq(publish_at),
-            pastes::private.eq(private),
-            pastes::updated_at.eq(now_unix()),
-            pastes::notified.eq(false),
-        ))
-        .execute(conn)?;
+    txn.commit()?;
     Ok(new_id)
 }
 
-pub fn delete_paste(conn: &mut SqliteConnection, id: &str) -> QueryResult<usize> {
-    diesel::delete(pastes::table.find(id)).execute(conn)
+pub fn delete_paste(db: &Database, id: &str) -> Result<usize, AppError> {
+    let txn = db.begin_write()?;
+    let removed;
+    {
+        let mut meta = txn.open_table(PASTE_META)?;
+        removed = usize::from(meta.remove(id)?.is_some());
+        let mut contents = txn.open_table(CONTENTS)?;
+        contents.remove(id)?;
+    }
+    txn.commit()?;
+    Ok(removed)
 }
 
-pub fn pending_reveals(conn: &mut SqliteConnection, now: i64) -> QueryResult<Vec<Paste>> {
-    pastes::table
-        .filter(pastes::notified.eq(false).and(pastes::publish_at.le(now)))
-        .load(conn)
+pub fn pending_reveals(db: &Database, now: i64) -> Result<Vec<Paste>, AppError> {
+    let due = all_pastes(db)?
+        .into_iter()
+        .filter(|paste| !paste.record.notified && paste.record.publish_at <= now)
+        .collect();
+    hydrate(db, due)
 }
 
-pub fn mark_notified(conn: &mut SqliteConnection, id: &str) -> QueryResult<usize> {
-    diesel::update(pastes::table.find(id))
-        .set(pastes::notified.eq(true))
-        .execute(conn)
+pub fn mark_notified(db: &Database, id: &str) -> Result<usize, AppError> {
+    let txn = db.begin_write()?;
+    let updated;
+    {
+        let mut meta = txn.open_table(PASTE_META)?;
+        let record = match meta.get(id)? {
+            Some(value) => Some(serde_json::from_str::<PasteRecord>(value.value())?),
+            None => None,
+        };
+        match record {
+            Some(mut record) => {
+                record.notified = true;
+                let json = serde_json::to_string(&record)?;
+                meta.insert(id, json.as_str())?;
+                updated = 1;
+            }
+            None => updated = 0,
+        }
+    }
+    txn.commit()?;
+    Ok(updated)
 }
 
 // ---------------------------------------------------------------------------
 // Subscriptions
 // ---------------------------------------------------------------------------
 
-pub fn subscribe(conn: &mut SqliteConnection, user_id: i64, paste_id: &str) -> QueryResult<usize> {
-    diesel::insert_into(subscriptions::table)
-        .values(&NewSubscription {
-            user_id,
-            paste_id,
-            created_at: now_unix(),
-        })
-        .on_conflict((subscriptions::user_id, subscriptions::paste_id))
-        .do_nothing()
-        .execute(conn)
+pub fn subscribe(db: &Database, user_id: i64, paste_id: &str) -> Result<usize, AppError> {
+    let txn = db.begin_write()?;
+    let inserted;
+    {
+        let mut table = txn.open_table(SUBSCRIPTIONS)?;
+        if table.get((user_id, paste_id))?.is_some() {
+            inserted = 0;
+        } else {
+            table.insert((user_id, paste_id), now_unix())?;
+            inserted = 1;
+        }
+    }
+    txn.commit()?;
+    Ok(inserted)
 }
 
-pub fn unsubscribe(
-    conn: &mut SqliteConnection,
-    user_id: i64,
-    paste_id: &str,
-) -> QueryResult<usize> {
-    diesel::delete(subscriptions::table.find((user_id, paste_id))).execute(conn)
+pub fn unsubscribe(db: &Database, user_id: i64, paste_id: &str) -> Result<usize, AppError> {
+    let txn = db.begin_write()?;
+    let removed;
+    {
+        let mut table = txn.open_table(SUBSCRIPTIONS)?;
+        removed = usize::from(table.remove((user_id, paste_id))?.is_some());
+    }
+    txn.commit()?;
+    Ok(removed)
 }
 
-pub fn list_subscriptions(
-    conn: &mut SqliteConnection,
-    user_id: i64,
-) -> QueryResult<Vec<Subscription>> {
-    subscriptions::table
-        .filter(subscriptions::user_id.eq(user_id))
-        .order(subscriptions::created_at.desc())
-        .load(conn)
+pub fn list_subscriptions(db: &Database, user_id: i64) -> Result<Vec<Subscription>, AppError> {
+    let read = db.begin_read()?;
+    let table = read.open_table(SUBSCRIPTIONS)?;
+    let mut subscriptions = Vec::new();
+    for entry in table.iter()? {
+        let (key, value) = entry?;
+        let (user, paste_id) = key.value();
+        if user == user_id {
+            subscriptions.push(Subscription {
+                user_id,
+                paste_id: paste_id.to_string(),
+                created_at: value.value(),
+            });
+        }
+    }
+    subscriptions.sort_by(|a, b| {
+        b.created_at
+            .cmp(&a.created_at)
+            .then_with(|| a.paste_id.cmp(&b.paste_id))
+    });
+    Ok(subscriptions)
 }
 
-pub fn subscription_count(conn: &mut SqliteConnection, user_id: i64) -> QueryResult<i64> {
-    subscriptions::table
-        .filter(subscriptions::user_id.eq(user_id))
-        .count()
-        .get_result(conn)
+pub fn subscription_count(db: &Database, user_id: i64) -> Result<i64, AppError> {
+    let read = db.begin_read()?;
+    let table = read.open_table(SUBSCRIPTIONS)?;
+    let mut count = 0;
+    for entry in table.iter()? {
+        let (key, _) = entry?;
+        if key.value().0 == user_id {
+            count += 1;
+        }
+    }
+    Ok(count)
 }
 
-pub fn subscribers_for_paste(conn: &mut SqliteConnection, paste_id: &str) -> QueryResult<Vec<i64>> {
-    subscriptions::table
-        .filter(subscriptions::paste_id.eq(paste_id))
-        .select(subscriptions::user_id)
-        .load(conn)
+pub fn subscribers_for_paste(db: &Database, paste_id: &str) -> Result<Vec<i64>, AppError> {
+    let read = db.begin_read()?;
+    let table = read.open_table(SUBSCRIPTIONS)?;
+    let mut subscribers = Vec::new();
+    for entry in table.iter()? {
+        let (key, _) = entry?;
+        let (user, paste) = key.value();
+        if paste == paste_id {
+            subscribers.push(user);
+        }
+    }
+    Ok(subscribers)
 }
 
-pub fn delete_subscriptions_for_paste(
-    conn: &mut SqliteConnection,
-    paste_id: &str,
-) -> QueryResult<usize> {
-    diesel::delete(subscriptions::table.filter(subscriptions::paste_id.eq(paste_id))).execute(conn)
+pub fn delete_subscriptions_for_paste(db: &Database, paste_id: &str) -> Result<usize, AppError> {
+    let txn = db.begin_write()?;
+    let removed;
+    {
+        let mut table = txn.open_table(SUBSCRIPTIONS)?;
+        let mut keys = Vec::new();
+        for entry in table.iter()? {
+            let (key, _) = entry?;
+            let (user, paste) = key.value();
+            if paste == paste_id {
+                keys.push((user, paste.to_string()));
+            }
+        }
+        removed = keys.len();
+        for (user, paste) in keys {
+            table.remove((user, paste.as_str()))?;
+        }
+    }
+    txn.commit()?;
+    Ok(removed)
 }
 
 // ---------------------------------------------------------------------------
 // Update dedup
 // ---------------------------------------------------------------------------
 
-pub fn register_update(conn: &mut SqliteConnection, update_id: i64) -> QueryResult<usize> {
-    diesel::insert_into(updates::table)
-        .values(&NewUpdate {
-            update_id,
-            received_at: now_unix(),
-        })
-        .execute(conn)
+/// Record an update id. Returns `false` if it was already registered.
+pub fn register_update(db: &Database, update_id: i64) -> Result<bool, AppError> {
+    let txn = db.begin_write()?;
+    let inserted;
+    {
+        let mut table = txn.open_table(UPDATES)?;
+        if table.get(update_id)?.is_some() {
+            inserted = false;
+        } else {
+            table.insert(update_id, now_unix())?;
+            inserted = true;
+        }
+    }
+    txn.commit()?;
+    Ok(inserted)
 }
 
-pub fn forget_update(conn: &mut SqliteConnection, update_id: i64) -> QueryResult<usize> {
-    diesel::delete(updates::table.find(update_id)).execute(conn)
+pub fn forget_update(db: &Database, update_id: i64) -> Result<usize, AppError> {
+    let txn = db.begin_write()?;
+    let removed;
+    {
+        let mut table = txn.open_table(UPDATES)?;
+        removed = usize::from(table.remove(update_id)?.is_some());
+    }
+    txn.commit()?;
+    Ok(removed)
 }
 
 // ---------------------------------------------------------------------------
 // Conversations (wizard state)
 // ---------------------------------------------------------------------------
 
-pub fn get_conversation(
-    conn: &mut SqliteConnection,
-    user_id: i64,
-) -> QueryResult<Option<Conversation>> {
-    conversations::table.find(user_id).first(conn).optional()
+pub fn get_conversation(db: &Database, user_id: i64) -> Result<Option<Conversation>, AppError> {
+    let read = db.begin_read()?;
+    let table = read.open_table(CONVERSATIONS)?;
+    let Some(value) = table.get(user_id)? else {
+        return Ok(None);
+    };
+    let record: ConversationRecord = serde_json::from_str(value.value())?;
+    Ok(Some(Conversation {
+        user_id,
+        kind: record.kind,
+        step: record.step,
+        paste_id: record.paste_id,
+        content: record.content,
+        title: record.title,
+        publish_at: record.publish_at,
+        updated_at: record.updated_at,
+    }))
 }
 
-pub fn set_conversation(
-    conn: &mut SqliteConnection,
-    conv: &NewConversation<'_>,
-) -> QueryResult<usize> {
-    diesel::insert_into(conversations::table)
-        .values(conv)
-        .on_conflict(conversations::user_id)
-        .do_update()
-        .set((
-            conversations::kind.eq(conv.kind),
-            conversations::step.eq(conv.step),
-            conversations::paste_id.eq(conv.paste_id),
-            conversations::content.eq(conv.content),
-            conversations::title.eq(conv.title),
-            conversations::publish_at.eq(conv.publish_at),
-            conversations::updated_at.eq(conv.updated_at),
-        ))
-        .execute(conn)
+pub fn set_conversation(db: &Database, conv: &NewConversation<'_>) -> Result<usize, AppError> {
+    let record = ConversationRecord {
+        kind: conv.kind.to_string(),
+        step: conv.step.to_string(),
+        paste_id: conv.paste_id.to_string(),
+        content: conv.content.to_string(),
+        title: conv.title.to_string(),
+        publish_at: conv.publish_at,
+        updated_at: conv.updated_at,
+    };
+    let json = serde_json::to_string(&record)?;
+    let txn = db.begin_write()?;
+    {
+        let mut table = txn.open_table(CONVERSATIONS)?;
+        table.insert(conv.user_id, json.as_str())?;
+    }
+    txn.commit()?;
+    Ok(1)
 }
 
-pub fn delete_conversation(conn: &mut SqliteConnection, user_id: i64) -> QueryResult<usize> {
-    diesel::delete(conversations::table.find(user_id)).execute(conn)
+pub fn delete_conversation(db: &Database, user_id: i64) -> Result<usize, AppError> {
+    let txn = db.begin_write()?;
+    let removed;
+    {
+        let mut table = txn.open_table(CONVERSATIONS)?;
+        removed = usize::from(table.remove(user_id)?.is_some());
+    }
+    txn.commit()?;
+    Ok(removed)
 }
 
-pub fn purge_stale_conversations(
-    conn: &mut SqliteConnection,
-    older_than: i64,
-) -> QueryResult<usize> {
-    diesel::delete(conversations::table.filter(conversations::updated_at.lt(older_than)))
-        .execute(conn)
+pub fn purge_stale_conversations(db: &Database, older_than: i64) -> Result<usize, AppError> {
+    let txn = db.begin_write()?;
+    let removed;
+    {
+        let mut table = txn.open_table(CONVERSATIONS)?;
+        let mut stale = Vec::new();
+        for entry in table.iter()? {
+            let (key, value) = entry?;
+            let record: ConversationRecord = serde_json::from_str(value.value())?;
+            if record.updated_at < older_than {
+                stale.push(key.value());
+            }
+        }
+        removed = stale.len();
+        for user_id in stale {
+            table.remove(user_id)?;
+        }
+    }
+    txn.commit()?;
+    Ok(removed)
 }

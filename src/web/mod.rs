@@ -291,7 +291,7 @@ impl ListTemplate {
 // ---------------------------------------------------------------------------
 
 async fn read(State(state): State<AppState>, Path(id): Path<String>) -> Result<Response, AppError> {
-    let paste = store::run(&state.pool, move |conn| Ok(store::get_paste(conn, &id)?)).await?;
+    let paste = store::run(&state.pool, move |db| store::get_paste(db, &id)).await?;
     let Some(paste) = paste else {
         return Err(AppError::NotFound);
     };
@@ -409,7 +409,7 @@ async fn created(
 ) -> Result<Response, PageError> {
     let paste = store::run(&state.pool, {
         let id = id.clone();
-        move |conn| Ok(store::get_paste(conn, &id)?)
+        move |db| store::get_paste(db, &id)
     })
     .await?;
     let Some(paste) = paste else {
