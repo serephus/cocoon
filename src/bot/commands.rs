@@ -833,9 +833,12 @@ mod tests {
 
     // ---- end-to-end command flow against a fake messenger + temp database ----
 
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{Arc, Mutex};
 
     use async_trait::async_trait;
+
+    static TEST_DB_SEQ: AtomicU64 = AtomicU64::new(0);
 
     use crate::bot::Messenger;
     use crate::state::AppState;
@@ -901,12 +904,14 @@ mod tests {
 
     fn test_state() -> (AppState, Arc<FakeMessenger>) {
         let messenger = Arc::new(FakeMessenger::default());
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let seq = TEST_DB_SEQ.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
-            "cocoon-test-{}.db",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
+            "cocoon-test-{}-{nonce}-{seq}.db",
+            std::process::id()
         ));
         let pool = crate::store::build_pool(path.to_str().unwrap()).unwrap();
         let config = crate::config::Config {
